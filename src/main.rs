@@ -1,5 +1,9 @@
+mod camera;
 mod texture;
-use std::{iter, mem};
+
+use macaw as ma;
+use std::os::linux::raw::stat;
+use std::{iter, mem, slice};
 use wgpu::util::DeviceExt;
 use winit::{
     event::*,
@@ -45,15 +49,24 @@ struct State {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
-    //
+    // pipeline
     render_pipeline: wgpu::RenderPipeline,
-    //
+    // mesh
     vertex_array_buffer: wgpu::Buffer,
     vertex_array_buffer_indices_offset: usize, // in bytes
     indices_count: usize,
-    //
+    // texture
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
+    // camera
+    camera: camera::Camera,
+    projection: camera::PerspectiveProjection,
+    camera_controller: camera::CameraController,
+    camera_uniform: camera::CameraUniform,
+    camera_buffer: wgpu::Buffer,
+    camera_bind_group: wgpu::BindGroup,
+    //
+    mouse_pressed: bool,
 }
 impl State {
     async fn new(window: &Window) -> Self {
@@ -85,7 +98,7 @@ impl State {
         assert_ne!(size.width, 0);
         assert_ne!(size.height, 0);
 
-        let surface_config = wgpu::SurfaceConfiguration {
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface.get_preferred_format(&adapter).unwrap(),
             width: size.width,
@@ -139,6 +152,52 @@ impl State {
             ],
         });
 
+        let camera = camera::Camera::new(
+            (0.0, 5.0, 10.0).into(),
+            f32::to_radians(-90.),
+            f32::to_radians(-20.),
+        );
+        let camera_controller = camera::CameraController::new(4.0, 50.0);
+
+        let projection = camera::PerspectiveProjection {
+            fov_y: f32::to_radians(45.0),
+            aspect: config.width as f32 / config.height as f32,
+            z_near: 0.1,
+            z_far: 100.0,
+        };
+        let mut camera_uniform = camera::CameraUniform::new();
+        camera_uniform.update_view_proj(&camera, &projection);
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera uniform buffer"),
+            contents: bytemuck::cast_slice(slice::from_ref(&camera_uniform)),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("camera bind group"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &camera_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+
         // ----------
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
@@ -149,7 +208,7 @@ impl State {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
-                bind_group_layouts: &[&texture_bind_group_layout],
+                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -180,7 +239,7 @@ impl State {
                 module: &shader,
                 entry_point: "fs_main",
                 targets: &[wgpu::ColorTargetState {
-                    format: surface_config.format,
+                    format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 }],
@@ -195,21 +254,28 @@ impl State {
             contents: &[vert_bytes, ind_bytes].concat(),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
         });
-        let vertex_array_indices_offset = vert_bytes.len();
+        let vertex_array_buffer_indices_offset = vert_bytes.len();
         let indices_count = INDICES.len();
 
         Self {
             surface,
             device,
             queue,
-            config: surface_config,
+            config,
             size,
             render_pipeline,
             vertex_array_buffer,
-            vertex_array_buffer_indices_offset: vertex_array_indices_offset,
+            vertex_array_buffer_indices_offset,
             indices_count,
             diffuse_bind_group,
             diffuse_texture,
+            camera,
+            projection,
+            camera_controller,
+            camera_uniform,
+            camera_buffer,
+            camera_bind_group,
+            mouse_pressed: false,
         }
     }
 
@@ -221,14 +287,50 @@ impl State {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+
+        self.projection.resize(size.into());
     }
 
-    fn input(&mut self, event: &WindowEvent) -> bool {
-        false
+    fn input(&mut self, event: &DeviceEvent) -> bool {
+        match event {
+            //
+            DeviceEvent::Key(KeyboardInput {
+                virtual_keycode: Some(key),
+                state,
+                ..
+            }) => self.camera_controller.process_key_events(*key, *state),
+            //
+            DeviceEvent::Button {
+                button: 1, // left mouse button
+                state,
+            } => {
+                self.mouse_pressed = *state == ElementState::Pressed;
+                true
+            }
+            //
+            DeviceEvent::MouseMotion { delta } => {
+                if self.mouse_pressed {
+                    self.camera_controller
+                        .process_mouse_delta_events(delta.0, delta.1);
+                }
+                true
+            }
+            //
+            _ => false,
+        }
     }
 
-    fn update(&mut self) {
-        // todo
+    fn update(&mut self, dt: std::time::Duration) {
+        self.camera_controller.update_camera(&mut self.camera, dt);
+        self.camera_uniform
+            .update_view_proj(&self.camera, &self.projection);
+
+        // todo use a staging buffer instead of writing directly
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(slice::from_ref(&self.camera_uniform)),
+        );
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -267,7 +369,8 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
 
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]);
 
             render_pass.set_vertex_buffer(
                 0,
@@ -300,12 +403,51 @@ fn main() {
 
     let mut state = pollster::block_on(State::new(&window));
 
+    let mut last_render_time = std::time::Instant::now();
+
     event_loop.run(move |event, _, control_flow| match event {
+        //
+        Event::DeviceEvent { ref event, .. } => {
+            state.input(event);
+        }
+        //
+        Event::WindowEvent {
+            ref event,
+            window_id,
+        } if window_id == window.id() => {
+            match event {
+                //
+                WindowEvent::CloseRequested
+                | WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            state: ElementState::Pressed,
+                            virtual_keycode: Some(VirtualKeyCode::Escape),
+                            ..
+                        },
+                    ..
+                } => *control_flow = ControlFlow::Exit,
+                //
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(*physical_size);
+                }
+                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                    state.resize(**new_inner_size);
+                }
+                _ => {}
+            }
+        }
+        //
         Event::MainEventsCleared => {
             window.request_redraw();
         }
+        //
         Event::RedrawRequested(window_id) if window_id == window.id() => {
-            state.update();
+            let now = std::time::Instant::now();
+            let dt = now - last_render_time;
+            last_render_time = now;
+            state.update(dt);
+
             match state.render() {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => {
@@ -319,29 +461,7 @@ fn main() {
                 Err(e) => eprintln!("Surface error: {:?}", e),
             }
         }
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() => match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => *control_flow = ControlFlow::Exit,
-            WindowEvent::Resized(physical_size) => {
-                state.resize(*physical_size);
-            }
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                state.resize(**new_inner_size);
-            }
-
-            _ => {}
-        },
+        //
         _ => {}
     });
 }
