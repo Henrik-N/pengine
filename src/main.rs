@@ -1,7 +1,7 @@
 mod camera;
 mod texture;
 
-use macaw as ma;
+use macaw as m;
 use std::os::linux::raw::stat;
 use std::{iter, mem, slice};
 use wgpu::util::DeviceExt;
@@ -43,6 +43,38 @@ const VERTICES: &[Vertex] = &[
 
 const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct Instance {
+    model: m::Mat4,
+}
+unsafe impl bytemuck::Pod for Instance {}
+unsafe impl bytemuck::Zeroable for Instance {}
+
+const NUM_INSTANCES_PER_ROW: u32 = 10;
+const INSTANCE_DISPLACEMENT: m::Vec3 = m::const_vec3!([
+    NUM_INSTANCES_PER_ROW as f32 * 0.5,
+    0.0,
+    NUM_INSTANCES_PER_ROW as f32 * 0.5
+]);
+
+impl Instance {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
+        5 => Float32x4,
+        6 => Float32x4,
+        7 => Float32x4,
+        8 => Float32x4,
+    ];
+
+    fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<Self>() as _,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &Self::ATTRIBUTES,
+        }
+    }
+}
+
 struct State {
     surface: wgpu::Surface,
     device: wgpu::Device,
@@ -55,9 +87,11 @@ struct State {
     vertex_array_buffer: wgpu::Buffer,
     vertex_array_buffer_indices_offset: usize, // in bytes
     indices_count: usize,
-    // texture
+    // diffuse texture
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
+    // depth texture
+    depth_texture: texture::Texture,
     // camera
     camera: camera::Camera,
     projection: camera::PerspectiveProjection,
@@ -65,6 +99,9 @@ struct State {
     camera_uniform: camera::CameraUniform,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    // instances
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
     //
     mouse_pressed: bool,
 }
@@ -103,7 +140,7 @@ impl State {
             format: surface.get_preferred_format(&adapter).unwrap(),
             width: size.width,
             height: size.height,
-            present_mode: wgpu::PresentMode::Fifo, // todo check supported present modes
+            present_mode: wgpu::PresentMode::Mailbox,
         };
 
         let texture_bind_group_layout =
@@ -133,7 +170,7 @@ impl State {
             &device,
             &queue,
             include_bytes!("tree.png"),
-            Some("diffuse texture"),
+            "diffuse texture",
         )
         .unwrap();
 
@@ -151,6 +188,8 @@ impl State {
                 },
             ],
         });
+
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config);
 
         let camera = camera::Camera::new(
             (0.0, 5.0, 10.0).into(),
@@ -218,7 +257,7 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::buffer_layout()],
+                buffers: &[Vertex::buffer_layout(), Instance::buffer_layout()],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -229,7 +268,13 @@ impl State {
                 unclipped_depth: false,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: texture::Texture::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState {
                 count: 1,
                 mask: !0,                         // all
@@ -257,6 +302,31 @@ impl State {
         let vertex_array_buffer_indices_offset = vert_bytes.len();
         let indices_count = INDICES.len();
 
+        let instances = (0..NUM_INSTANCES_PER_ROW)
+            .flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let translation = m::vec3(x as _, 0.0, z as _);
+
+                    let rotation = if translation == m::Vec3::ZERO {
+                        // trying to rotate around a (0,0,0) "axis" will cause the scaling to go to zero
+                        m::Quat::from_rotation_z(f32::to_radians(0.))
+                    } else {
+                        m::Quat::from_axis_angle(translation.normalize(), f32::to_radians(45.0))
+                    };
+
+                    Instance {
+                        model: m::Mat4::from_rotation_translation(rotation, translation),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance buffer"),
+            contents: bytemuck::cast_slice(&instances),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         Self {
             surface,
             device,
@@ -269,12 +339,15 @@ impl State {
             indices_count,
             diffuse_bind_group,
             diffuse_texture,
+            depth_texture,
             camera,
             projection,
             camera_controller,
             camera_uniform,
             camera_buffer,
             camera_bind_group,
+            instances,
+            instance_buffer,
             mouse_pressed: false,
         }
     }
@@ -288,7 +361,9 @@ impl State {
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
 
-        self.projection.resize(size.into());
+        self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config);
+        self.projection
+            .resize((self.config.width, self.config.height));
     }
 
     fn input(&mut self, event: &DeviceEvent) -> bool {
@@ -364,7 +439,14 @@ impl State {
                         store: true,
                     },
                 }],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture.view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
@@ -383,7 +465,9 @@ impl State {
                 wgpu::IndexFormat::Uint16,
             );
 
-            render_pass.draw_indexed(0..(self.indices_count as u32), 0, 0..1);
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+
+            render_pass.draw_indexed(0..self.indices_count as _, 0, 0..self.instances.len() as _);
         }
 
         self.queue.submit(iter::once(cmd.finish()));

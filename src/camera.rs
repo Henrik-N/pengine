@@ -57,15 +57,6 @@ pub struct PerspectiveProjection {
     pub z_far: f32,
 }
 impl PerspectiveProjection {
-    pub fn new(width: u32, height: u32, fov_y: f32, z_near: f32, z_far: f32) -> Self {
-        Self {
-            aspect: width as f32 / height as f32,
-            fov_y,
-            z_near,
-            z_far,
-        }
-    }
-
     pub fn resize(&mut self, (width, height): (u32, u32)) {
         self.aspect = width as f32 / height as f32;
     }
