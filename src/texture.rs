@@ -1,6 +1,4 @@
 use anyhow::*;
-use image::GenericImageView;
-use wgpu::Extent3d;
 
 pub struct Texture {
     pub texture: wgpu::Texture,
@@ -9,11 +7,24 @@ pub struct Texture {
 }
 
 impl Texture {
+    pub fn from_asset(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        asset_name: &str,
+    ) -> Result<Self> {
+        let texture_assets_dir = std::path::Path::new(env!("OUT_DIR")).join("assets/textures");
+        let image = image::open(texture_assets_dir.join(asset_name)).with_context(|| "texture")?;
+        Self::from_image(device, queue, &image, Some(asset_name))
+    }
+}
+
+impl Texture {
+    #[allow(unused)]
     pub fn from_bytes(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bytes: &[u8],
-        label: &str,
+        label: Option<&str>,
     ) -> Result<Self> {
         let image = image::load_from_memory(bytes)?;
         Self::from_image(device, queue, &image, label)
@@ -23,9 +34,9 @@ impl Texture {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         image: &image::DynamicImage,
-        label: &str,
+        label: Option<&str>,
     ) -> Result<Self> {
-        let pixel_data = image.as_rgba8().unwrap();
+        let pixel_data = image.to_rgba8();
 
         use image::GenericImageView;
         let dimensions = image.dimensions();
@@ -36,7 +47,7 @@ impl Texture {
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
+            label,
             size: extent,
             mip_level_count: 1,
             sample_count: 1,
@@ -52,7 +63,7 @@ impl Texture {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            pixel_data, // pixel data
+            &pixel_data,
             // layout of the texture
             wgpu::ImageDataLayout {
                 offset: 0,
@@ -65,9 +76,12 @@ impl Texture {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             // what to do if the sampler gets a texture coord outside of the texture
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            // address_mode_u: wgpu::AddressMode::ClampToEdge,
+            // address_mode_v: wgpu::AddressMode::ClampToEdge,
+            // address_mode_w: wgpu::AddressMode::ClampToEdge,
+            address_mode_u: wgpu::AddressMode::MirrorRepeat,
+            address_mode_v: wgpu::AddressMode::MirrorRepeat,
+            address_mode_w: wgpu::AddressMode::MirrorRepeat,
             //
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,

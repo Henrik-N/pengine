@@ -1,11 +1,50 @@
 use macaw as m;
-use macaw::Mat4;
-use std::f32::consts::FRAC_PI_2;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyboardInput, MouseScrollDelta, VirtualKeyCode, WindowEvent};
+use winit::event::{ElementState, VirtualKeyCode};
 
-// tau / 4
+/// Tau / 4
 const FRAC_TAU_4: f32 = std::f32::consts::FRAC_PI_2;
+
+/// Data related to the editor camera
+pub struct EditorCamera {
+    camera: Camera,
+    pub projection: PerspectiveProjection,
+    pub controller: CameraController,
+    pub uniform_data: CameraUniform,
+}
+impl EditorCamera {
+    pub fn init(config: &wgpu::SurfaceConfiguration) -> Self {
+        let camera = Camera::new(
+            (0.0, 5.0, 10.0).into(),
+            f32::to_radians(-90.),
+            f32::to_radians(-20.),
+        );
+        let controller = CameraController::new(4.0, 50.0);
+
+        let projection = PerspectiveProjection {
+            fov_y: f32::to_radians(45.0),
+            aspect: config.width as f32 / config.height as f32,
+            z_near: 0.1,
+            z_far: 100.0,
+        };
+
+        let mut uniform_data = CameraUniform::new();
+        uniform_data.update_view_proj(&camera, &projection);
+
+        Self {
+            camera,
+            projection,
+            controller,
+            uniform_data,
+        }
+    }
+
+    pub fn update(&mut self, dt: std::time::Duration) {
+        // update camera data
+        self.controller.update_transform(&mut self.camera, dt);
+        self.uniform_data
+            .update_view_proj(&self.camera, &self.projection);
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -136,7 +175,7 @@ impl CameraController {
         self.pitch_amount = dy as _;
     }
 
-    pub fn update_camera(&mut self, camera: &mut Camera, dt: std::time::Duration) {
+    fn update_transform(&mut self, camera: &mut Camera, dt: std::time::Duration) {
         let dt = dt.as_secs_f32();
 
         // Move forwards/backwards and left/right

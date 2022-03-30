@@ -1,10 +1,22 @@
+mod bind_groups;
 mod camera;
+mod mesh;
+mod render_scene;
 mod texture;
 
+/// The maximum amount of draw calls expected. Decides the size of the draw commands buffer
+/// (and will in the future simply indicate the maximum expected draw count).
+const MAX_DRAW_COMMANDS: usize = 100;
+
+use crate::{
+    mesh::{Vertex, VertexArrayBuffer},
+    render_scene::{DrawOutputInfo, RenderObjectDescriptor},
+};
 use macaw as m;
-use std::os::linux::raw::stat;
+use penguin_util::{
+    handle::Handle, raw_gpu_types::DrawIndirectCount, GpuBuffer, GpuBufferDeviceExt,
+};
 use std::{iter, mem, slice};
-use wgpu::util::DeviceExt;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
@@ -12,58 +24,16 @@ use winit::{
 };
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    tex_coords: [f32; 2],
-}
-impl Vertex {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 2] = wgpu::vertex_attr_array![
-        0 => Float32x3,
-        1 => Float32x2,
-    ];
-
-    fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBUTES,
-        }
-    }
-}
-
-#[rustfmt::skip]
-const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], tex_coords: [0.4131759, 1.0 - 0.99240386] },
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], tex_coords: [0.0048659444, 1.0 - 0.56958647] },
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], tex_coords: [0.28081453, 1.0 - 0.05060294] },
-    Vertex { position: [0.35966998, -0.3473291, 0.0], tex_coords: [0.85967, 1.0 - 0.1526709] },
-    Vertex { position: [0.44147372, 0.2347359, 0.0], tex_coords: [0.9414737, 1.0 - 0.7347359] },
-];
-
-const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4];
-
-#[repr(C)]
 #[derive(Copy, Clone)]
-struct Instance {
-    model: m::Mat4,
+pub struct RenderInstance {
+    pub render_object_id: Handle<render_scene::RenderObject>,
 }
-unsafe impl bytemuck::Pod for Instance {}
-unsafe impl bytemuck::Zeroable for Instance {}
+unsafe impl bytemuck::Pod for RenderInstance {}
+unsafe impl bytemuck::Zeroable for RenderInstance {}
 
-const NUM_INSTANCES_PER_ROW: u32 = 10;
-const INSTANCE_DISPLACEMENT: m::Vec3 = m::const_vec3!([
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-    0.0,
-    NUM_INSTANCES_PER_ROW as f32 * 0.5
-]);
-
-impl Instance {
-    const ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
-        5 => Float32x4,
-        6 => Float32x4,
-        7 => Float32x4,
-        8 => Float32x4,
+impl RenderInstance {
+    const ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![
+        5 => Uint32,
     ];
 
     fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
@@ -75,37 +45,104 @@ impl Instance {
     }
 }
 
-struct State {
+/// Temporary variable that increases with a value each frame.
+static mut TIME_STATE: f32 = 0.0_f32;
+
+/// Data related to a compute pass.
+struct Compute {
+    pipeline: wgpu::ComputePipeline,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Data related to a render pass.
+struct Render {
+    pipeline: wgpu::RenderPipeline,
+    vertex_shader_bind_group: wgpu::BindGroup,
+    fragment_shader_bind_group: wgpu::BindGroup,
+}
+
+/// Objects registered in the scene (temporary storage).
+struct SceneObjects {
+    cube_object: Handle<render_scene::RenderObject>,
+    cube_object2: Handle<render_scene::RenderObject>,
+    cone_object: Handle<render_scene::RenderObject>,
+    cone_object2: Handle<render_scene::RenderObject>,
+}
+
+/// State with data necessary to render.
+struct RendererState {
     surface: wgpu::Surface,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    /// Window size excluding the window's borders and title bar.
     size: winit::dpi::PhysicalSize<u32>,
-    // pipeline
-    render_pipeline: wgpu::RenderPipeline,
-    // mesh
-    vertex_array_buffer: wgpu::Buffer,
-    vertex_array_buffer_indices_offset: usize, // in bytes
-    indices_count: usize,
-    // diffuse texture
-    diffuse_bind_group: wgpu::BindGroup,
-    diffuse_texture: texture::Texture,
-    // depth texture
+    /// Compute pass data.
+    compute: Compute,
+    /// Render pass data.
+    render: Render,
+    // A texture.
+    _cube_texture: texture::Texture,
+    /// The depth texture.
     depth_texture: texture::Texture,
-    // camera
-    camera: camera::Camera,
-    projection: camera::PerspectiveProjection,
-    camera_controller: camera::CameraController,
-    camera_uniform: camera::CameraUniform,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
-    // instances
-    instances: Vec<Instance>,
-    instance_buffer: wgpu::Buffer,
-    //
+    /// Editor camera data.
+    camera: camera::EditorCamera,
+    /// Uniform buffer.
+    uniform_buffer: GpuBuffer<camera::CameraUniform>,
+    /// Indicates weather the mouse left mouse button is held down.
     mouse_pressed: bool,
+    /// The currently loaded RenderScene.
+    scene: render_scene::RenderScene,
+    /// CPU storage for handles to RenderObjects in the RenderScene.
+    scene_objects: SceneObjects,
 }
-impl State {
+
+/// Helper struct when creating texture-related data.
+struct Textures {
+    bind_group_layout: wgpu::BindGroupLayout,
+    //
+    cube_texture: texture::Texture,
+    cube_texture_bind_group: wgpu::BindGroup,
+}
+impl RendererState {
+    fn init_textures(device: &wgpu::Device, queue: &wgpu::Queue) -> Textures {
+        let cube_texture = texture::Texture::from_asset(device, queue, "cube-diffuse.jpg").unwrap();
+
+        use bind_groups::layout_entry;
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("texture bind group layout"),
+                entries: &[
+                    layout_entry::texture::texture_2d(0, wgpu::ShaderStages::FRAGMENT),
+                    layout_entry::texture::sampler(1, wgpu::ShaderStages::FRAGMENT),
+                ],
+            });
+
+        let cube_texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cube diffuse bind group"),
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&cube_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&cube_texture.sampler),
+                },
+            ],
+        });
+
+        Textures {
+            bind_group_layout: texture_bind_group_layout,
+            cube_texture,
+            cube_texture_bind_group,
+        }
+    }
+}
+
+impl RendererState {
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
 
@@ -124,7 +161,15 @@ impl State {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
-                    features: wgpu::Features::default(), // wgpu::Features::BUFFER_BINDING_ARRAY,
+                    features:
+                    //wgpu::Features::default(), // wgpu::Features::BUFFER_BINDING_ARRAY,
+                    //wgpu::Features::default(), // wgpu::Features::BUFFER_BINDING_ARRAY,
+                    // wgpu::Features::POLYGON_MODE_LINE |
+                    // allow non-zero value for first_instance field in draw calls
+                    //wgpu::Features::INDIRECT_FIRST_INSTANCE |
+                    //wgpu::Features::TEXTURE_BINDING_ARRAY |
+                    // wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY,
+                    wgpu::Features::all() ^ wgpu::Features::TEXTURE_COMPRESSION_ETC2 ^ wgpu::Features::TEXTURE_COMPRESSION_ASTC_LDR ^ wgpu::Features::VERTEX_ATTRIBUTE_64BIT,
                     limits: wgpu::Limits::default(),
                 },
                 None,
@@ -143,111 +188,142 @@ impl State {
             present_mode: wgpu::PresentMode::Mailbox,
         };
 
-        let texture_bind_group_layout =
+        let Textures {
+            bind_group_layout: texture_bind_group_layout,
+            cube_texture,
+            cube_texture_bind_group,
+        } = Self::init_textures(&device, &queue);
+
+        let depth_texture = texture::Texture::create_depth_texture(&device, &config);
+
+        // ------------
+
+        let mut scene = render_scene::RenderScene::new(&device, &["cube.obj", "cone.obj"]);
+
+        let cube_object = scene.register_object(&RenderObjectDescriptor {
+            mesh_id: 0,
+            transform: m::Mat4::IDENTITY,
+            render_bounds: mesh::RenderBounds {
+                origin: m::Vec3::ZERO,
+                radius: 3.0,
+            },
+            draw_forward_pass: true,
+        });
+
+        let cube_object2 = scene.register_object(&RenderObjectDescriptor {
+            mesh_id: 0,
+            transform: m::Mat4::IDENTITY,
+            render_bounds: mesh::RenderBounds {
+                origin: m::Vec3::ZERO,
+                radius: 3.0,
+            },
+            draw_forward_pass: true,
+        });
+
+        let cone_object = scene.register_object(&RenderObjectDescriptor {
+            mesh_id: 1,
+            transform: m::Mat4::IDENTITY,
+            render_bounds: mesh::RenderBounds {
+                origin: m::Vec3::ZERO,
+                radius: 3.0,
+            },
+            draw_forward_pass: true,
+        });
+
+        let cone_object2 = scene.register_object(&RenderObjectDescriptor {
+            mesh_id: 1,
+            transform: m::Mat4::IDENTITY,
+            render_bounds: mesh::RenderBounds {
+                origin: m::Vec3::ZERO,
+                radius: 3.0,
+            },
+            draw_forward_pass: true,
+        });
+        scene.build_batches(&queue);
+
+        let camera = camera::EditorCamera::init(&config);
+
+        let uniform_buffer = device.create_buffer_init_t::<camera::CameraUniform>(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("camera uniform buffer"),
+                contents: bytemuck::cast_slice(slice::from_ref(&camera.uniform_data)),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            },
+        );
+
+        let vertex_shader_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("texture bind group layout"),
+                label: Some("camera bind group"),
                 entries: &[
+                    // camera uniform
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
+                    // render objects
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // instance_index to render_object map
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
                         count: None,
                     },
                 ],
             });
 
-        let diffuse_texture = texture::Texture::from_bytes(
-            &device,
-            &queue,
-            include_bytes!("tree.png"),
-            "diffuse texture",
-        )
-        .unwrap();
-
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("diffuse bind group"),
-            layout: &texture_bind_group_layout,
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &vertex_shader_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    resource: uniform_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    resource: scene.render_objects_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: scene
+                        .instance_index_to_render_object_map
+                        .as_entire_binding(),
                 },
             ],
         });
 
-        let depth_texture = texture::Texture::create_depth_texture(&device, &config);
-
-        let camera = camera::Camera::new(
-            (0.0, 5.0, 10.0).into(),
-            f32::to_radians(-90.),
-            f32::to_radians(-20.),
-        );
-        let camera_controller = camera::CameraController::new(4.0, 50.0);
-
-        let projection = camera::PerspectiveProjection {
-            fov_y: f32::to_radians(45.0),
-            aspect: config.width as f32 / config.height as f32,
-            z_near: 0.1,
-            z_far: 100.0,
-        };
-        let mut camera_uniform = camera::CameraUniform::new();
-        camera_uniform.update_view_proj(&camera, &projection);
-
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera uniform buffer"),
-            contents: bytemuck::cast_slice(slice::from_ref(&camera_uniform)),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera bind group"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-        });
-
-        // ----------
-
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: Some("shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/vert_frag.wgsl").into()),
         });
 
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("render pipeline layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &vertex_shader_bind_group_layout, // group 0
+                    &texture_bind_group_layout,       // group 1
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -257,7 +333,10 @@ impl State {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::buffer_layout(), Instance::buffer_layout()],
+                buffers: &[
+                    mesh::MeshVertex::buffer_layout(),
+                    RenderInstance::buffer_layout(),
+                ],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -292,40 +371,44 @@ impl State {
             multiview: None, // related to rendering to array textures
         });
 
-        let vert_bytes: &[u8] = bytemuck::cast_slice(VERTICES);
-        let ind_bytes: &[u8] = bytemuck::cast_slice(INDICES);
-        let vertex_array_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex array buffer"),
-            contents: &[vert_bytes, ind_bytes].concat(),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+        let render = Render {
+            pipeline: render_pipeline,
+            vertex_shader_bind_group: camera_bind_group,
+            fragment_shader_bind_group: cube_texture_bind_group,
+        };
+
+        let compute_shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            label: Some("compute shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compute.wgsl").into()),
         });
-        let vertex_array_buffer_indices_offset = vert_bytes.len();
-        let indices_count = INDICES.len();
 
-        let instances = (0..NUM_INSTANCES_PER_ROW)
-            .flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let translation = m::vec3(x as _, 0.0, z as _);
+        let compute_bind_group_layout = device
+            .create_bind_group_layout(&render_scene::compute_pipeline::BIND_GROUP_LAYOUT_DESC);
 
-                    let rotation = if translation == m::Vec3::ZERO {
-                        // trying to rotate around a (0,0,0) "axis" will cause the scaling to go to zero
-                        m::Quat::from_rotation_z(f32::to_radians(0.))
-                    } else {
-                        m::Quat::from_axis_angle(translation.normalize(), f32::to_radians(45.0))
-                    };
-
-                    Instance {
-                        model: m::Mat4::from_rotation_translation(rotation, translation),
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("instance buffer"),
-            contents: bytemuck::cast_slice(&instances),
-            usage: wgpu::BufferUsages::VERTEX,
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compute bind group"),
+            layout: &compute_bind_group_layout,
+            entries: &render_scene::compute_pipeline::bind_group_entries(&uniform_buffer, &scene),
         });
+
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("compute pipeline layout"),
+                bind_group_layouts: &[&compute_bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("compute pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: "cs_main",
+        });
+
+        let compute = Compute {
+            pipeline: compute_pipeline,
+            bind_group: compute_bind_group,
+        };
 
         Self {
             surface,
@@ -333,25 +416,24 @@ impl State {
             queue,
             config,
             size,
-            render_pipeline,
-            vertex_array_buffer,
-            vertex_array_buffer_indices_offset,
-            indices_count,
-            diffuse_bind_group,
-            diffuse_texture,
+            compute,
+            render,
+            _cube_texture: cube_texture,
             depth_texture,
             camera,
-            projection,
-            camera_controller,
-            camera_uniform,
-            camera_buffer,
-            camera_bind_group,
-            instances,
-            instance_buffer,
+            uniform_buffer,
             mouse_pressed: false,
+            scene,
+            scene_objects: SceneObjects {
+                cube_object,
+                cube_object2,
+                cone_object,
+                cone_object2,
+            },
         }
     }
 
+    /// Called when the window gets resized.
     fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         assert_ne!(size.width, 0);
         assert_ne!(size.height, 0);
@@ -362,10 +444,12 @@ impl State {
         self.surface.configure(&self.device, &self.config);
 
         self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config);
-        self.projection
+        self.camera
+            .projection
             .resize((self.config.width, self.config.height));
     }
 
+    /// Called on input events.
     fn input(&mut self, event: &DeviceEvent) -> bool {
         match event {
             //
@@ -373,7 +457,7 @@ impl State {
                 virtual_keycode: Some(key),
                 state,
                 ..
-            }) => self.camera_controller.process_key_events(*key, *state),
+            }) => self.camera.controller.process_key_events(*key, *state),
             //
             DeviceEvent::Button {
                 button: 1, // left mouse button
@@ -382,10 +466,10 @@ impl State {
                 self.mouse_pressed = *state == ElementState::Pressed;
                 true
             }
-            //
             DeviceEvent::MouseMotion { delta } => {
                 if self.mouse_pressed {
-                    self.camera_controller
+                    self.camera
+                        .controller
                         .process_mouse_delta_events(delta.0, delta.1);
                 }
                 true
@@ -395,32 +479,107 @@ impl State {
         }
     }
 
+    /// Called each frame.
     fn update(&mut self, dt: std::time::Duration) {
-        self.camera_controller.update_camera(&mut self.camera, dt);
-        self.camera_uniform
-            .update_view_proj(&self.camera, &self.projection);
+        // update camera data
+        self.camera.update(dt);
 
-        // todo use a staging buffer instead of writing directly
+        // schedule uniform buffer write
         self.queue.write_buffer(
-            &self.camera_buffer,
+            &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(slice::from_ref(&self.camera_uniform)),
+            bytemuck::cast_slice(slice::from_ref(&self.camera.uniform_data)),
         );
+
+        let (x, y) = unsafe {
+            TIME_STATE += dt.as_secs_f32() * 2.;
+            (f32::cos(TIME_STATE), f32::sin(TIME_STATE))
+        };
+
+        self.scene.update_transform(
+            self.scene_objects.cube_object,
+            m::Mat4::from_translation(m::vec3(x, y, 0.)),
+        );
+
+        self.scene.update_transform(
+            self.scene_objects.cube_object2,
+            m::Mat4::from_translation(m::vec3(1., 4., y)),
+        );
+
+        self.scene.update_transform(
+            self.scene_objects.cone_object,
+            m::Mat4::from_translation(m::vec3(3.1, 4. + y, 0.)),
+        );
+
+        self.scene.update_transform(
+            self.scene_objects.cone_object2,
+            m::Mat4::from_rotation_translation(
+                m::Quat::from_rotation_z(f32::to_radians(180.)),
+                m::vec3(3.1, -y, 0.),
+            ),
+        );
+
+        // update scene
+        self.scene.update(&self.queue);
     }
 
+    /// Submits compute commands.
+    fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        // compute commands
+        let mut cmd = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("compute commands encoder"),
+        });
+        cmd.push_debug_group("compute pass");
+        {
+            // clear local compute commands buffer
+            cmd.copy_buffer_to_buffer(
+                &self.scene.clear_compute_shader_local_data_buffer,
+                0,
+                &self.scene.compute_shader_local_data_buffer,
+                0,
+                (MAX_DRAW_COMMANDS * std::mem::size_of::<DrawOutputInfo>()) as _,
+            );
+
+            // clear draw count buffer
+            cmd.copy_buffer_to_buffer(
+                &self.scene.clear_draw_count_buffer,
+                0,
+                &self.scene.draw_count_buffer,
+                0,
+                std::mem::size_of::<DrawIndirectCount>() as _,
+            );
+
+            let mut compute_pass = cmd.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("compute pass"),
+            });
+            compute_pass.set_pipeline(&self.compute.pipeline);
+            compute_pass.set_bind_group(0, &self.compute.bind_group, &[]);
+            compute_pass.dispatch(self.scene.render_objects.inner.len() as _, 1, 1);
+        }
+        cmd.pop_debug_group();
+
+        queue.submit(Some(cmd.finish()));
+    }
+
+    /// Submits render commands.
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        // submit compute commands
+        self.prepare(&self.device, &self.queue);
+
         // get frame surface texture to render to
         let output_texture = self.surface.get_current_texture()?;
         let output_texture_view = output_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        // render commands
         let mut cmd = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render commands encoder"),
             });
 
+        cmd.push_debug_group("render pass");
         {
             let mut render_pass = cmd.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
@@ -449,26 +608,32 @@ impl State {
                 }),
             });
 
-            render_pass.set_pipeline(&self.render_pipeline);
+            // set render pipeline
+            render_pass.set_pipeline(&self.render.pipeline);
 
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.diffuse_bind_group, &[]);
+            // set bind groups
+            render_pass.set_bind_group(0, &self.render.vertex_shader_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.render.fragment_shader_bind_group, &[]);
 
-            render_pass.set_vertex_buffer(
-                0,
-                self.vertex_array_buffer
-                    .slice(0..(self.vertex_array_buffer_indices_offset as u64)),
-            );
+            // set vertex/index buffer
+            render_pass.set_vertex_buffer(0, self.scene.vertex_array_buffer.vertices_slice());
             render_pass.set_index_buffer(
-                self.vertex_array_buffer
-                    .slice((self.vertex_array_buffer_indices_offset as u64)..),
-                wgpu::IndexFormat::Uint16,
+                self.scene.vertex_array_buffer.indices_slice(),
+                wgpu::IndexFormat::Uint32,
             );
+            // set instance buffer
+            render_pass.set_vertex_buffer(1, self.scene.instance_buffer.slice(..));
 
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-
-            render_pass.draw_indexed(0..self.indices_count as _, 0, 0..self.instances.len() as _);
+            // draw
+            render_pass.multi_draw_indexed_indirect_count(
+                &self.scene.out_draw_commands_buffer,
+                0,
+                &self.scene.draw_count_buffer,
+                0,
+                self.scene.max_draw_count as _,
+            );
         }
+        cmd.pop_debug_group();
 
         self.queue.submit(iter::once(cmd.finish()));
         output_texture.present();
@@ -477,6 +642,7 @@ impl State {
     }
 }
 
+/// Entry point.
 fn main() {
     env_logger::init();
     let event_loop = EventLoop::new();
@@ -485,7 +651,7 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = pollster::block_on(State::new(&window));
+    let mut state = pollster::block_on(RendererState::new(&window));
 
     let mut last_render_time = std::time::Instant::now();
 
@@ -535,7 +701,7 @@ fn main() {
             match state.render() {
                 Ok(_) => {}
                 Err(wgpu::SurfaceError::Lost) => {
-                    println!("Device lost. Reconfiguring");
+                    println!("Surface lost. Reconfiguring");
                     state.resize(state.size);
                 }
                 Err(wgpu::SurfaceError::OutOfMemory) => {
