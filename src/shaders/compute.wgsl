@@ -4,7 +4,7 @@ struct CameraUniform {
     view_proj: mat4x4<f32>;
 };
 
-// 1
+// 1, 5
 //
 struct DrawIndexedIndirect {
     index_count: u32;
@@ -19,12 +19,16 @@ struct DrawCommandsStorage {
 
 // 2
 //
-struct DrawIndirectCount {
-    count: atomic<u32>;
+struct RenderObject {
+    mesh_handle: u32;
+    transform: mat4x4<f32>;
+    draw_command_index: u32;
+    // todo: render_bounds: RenderBounds, (for culling)
 };
-struct DrawIndirectCountStorage {
-    data: array<DrawIndirectCount>;
+struct RenderObjectsStorage {
+    data: array<RenderObject>;
 };
+
 
 // 3
 //
@@ -36,24 +40,22 @@ struct DrawOutputInfoStorage {
     data: array<DrawOutputInfo>;
 };
 
+
 // 4
 //
-struct RenderObject {
-    mesh_handle: u32;
-    transform: mat4x4<f32>;
-    draw_command_index: u32;
-    // todo: render_bounds: RenderBounds, (for culling)
+struct DrawIndirectCount {
+    count: atomic<u32>;
 };
-struct RenderObjectsStorage {
-    data: array<RenderObject>;
+struct DrawIndirectCountStorage {
+    data: array<DrawIndirectCount>;
 };
 
-// 5, 6
+
+// 6
 //
 struct AtomicU32Storage {
-    data: array<atomic<u32> >; // todo: instance index -> render object map
+    data: array<atomic<u32> >;
 };
-
 
 // unused, but plan to use for culling
 [[group(0), binding(0)]] var<uniform> camera: CameraUniform;
@@ -65,12 +67,10 @@ struct AtomicU32Storage {
 // render objects (to get the draw call ids from)
 [[group(0), binding(2)]] var<storage, read> render_objects: RenderObjectsStorage;
 
-
 // LOCAL
 //
 // data local to the compute shader
 [[group(0), binding(3)]] var<storage, read_write> output_info: DrawOutputInfoStorage;
-
 
 // OUT
 //

@@ -1,8 +1,10 @@
 mod bind_groups;
 mod camera;
+mod editor;
 mod mesh;
 mod render_scene;
 mod texture;
+mod time;
 
 /// The maximum amount of draw calls expected. Decides the size of the draw commands buffer
 /// (and will in the future simply indicate the maximum expected draw count).
@@ -70,13 +72,16 @@ struct SceneObjects {
 }
 
 /// State with data necessary to render.
-struct RendererState {
+pub struct RendererState {
     surface: wgpu::Surface,
-    device: wgpu::Device,
+    adapter: wgpu::Adapter,
+    pub device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     /// Window size excluding the window's borders and title bar.
-    size: winit::dpi::PhysicalSize<u32>,
+    pub size: winit::dpi::PhysicalSize<u32>,
+    /// Window scale factor.
+    scale_factor: f64,
     /// Compute pass data.
     compute: Compute,
     /// Render pass data.
@@ -187,6 +192,7 @@ impl RendererState {
             height: size.height,
             present_mode: wgpu::PresentMode::Mailbox,
         };
+        let scale_factor = window.scale_factor();
 
         let Textures {
             bind_group_layout: texture_bind_group_layout,
@@ -342,7 +348,8 @@ impl RendererState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                //cull_mode: Some(wgpu::Face::Back), // todo this is for egui, maybe create a separate pipeline for egui
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -412,10 +419,12 @@ impl RendererState {
 
         Self {
             surface,
+            adapter,
             device,
             queue,
             config,
             size,
+            scale_factor,
             compute,
             render,
             _cube_texture: cube_texture,
@@ -434,7 +443,7 @@ impl RendererState {
     }
 
     /// Called when the window gets resized.
-    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+    fn resize(&mut self, size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f64>) {
         assert_ne!(size.width, 0);
         assert_ne!(size.height, 0);
 
@@ -442,6 +451,10 @@ impl RendererState {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+
+        if let Some(scale_factor) = scale_factor {
+            self.scale_factor = scale_factor;
+        }
 
         self.depth_texture = texture::Texture::create_depth_texture(&self.device, &self.config);
         self.camera
@@ -480,7 +493,7 @@ impl RendererState {
     }
 
     /// Called each frame.
-    fn update(&mut self, dt: std::time::Duration) {
+    fn update_camera_and_scene(&mut self, dt: std::time::Duration) {
         // update camera data
         self.camera.update(dt);
 
@@ -523,12 +536,36 @@ impl RendererState {
         self.scene.update(&self.queue);
     }
 
-    /// Submits compute commands.
-    fn prepare(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
-        // compute commands
-        let mut cmd = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("compute commands encoder"),
-        });
+    /// Access the output view texture to submit render commands.
+    fn render<OutputTextureFunc: FnOnce(&wgpu::TextureView)>(
+        &self,
+        f: OutputTextureFunc,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let output_texture = self.surface.get_current_texture()?;
+        let output_texture_view = output_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        f(&output_texture_view);
+
+        output_texture.present();
+
+        Ok(())
+    }
+
+    /// Compute commands.
+    fn compute_commands(
+        &self,
+        device: &wgpu::Device,
+        encoder: Option<wgpu::CommandEncoder>,
+    ) -> wgpu::CommandEncoder {
+        let mut cmd = match encoder {
+            Some(encoder) => encoder,
+            None => device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("compute commands encoder"),
+            }),
+        };
+
         cmd.push_debug_group("compute pass");
         {
             // clear local compute commands buffer
@@ -558,26 +595,21 @@ impl RendererState {
         }
         cmd.pop_debug_group();
 
-        queue.submit(Some(cmd.finish()));
+        cmd
     }
 
-    /// Submits render commands.
-    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        // submit compute commands
-        self.prepare(&self.device, &self.queue);
-
-        // get frame surface texture to render to
-        let output_texture = self.surface.get_current_texture()?;
-        let output_texture_view = output_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
-        // render commands
-        let mut cmd = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    fn render_commands(
+        &self,
+        device: &wgpu::Device,
+        output_texture_view: &wgpu::TextureView,
+        encoder: Option<wgpu::CommandEncoder>,
+    ) -> wgpu::CommandEncoder {
+        let mut cmd = match encoder {
+            Some(encoder) => encoder,
+            None => device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render commands encoder"),
-            });
+            }),
+        };
 
         cmd.push_debug_group("render pass");
         {
@@ -635,10 +667,14 @@ impl RendererState {
         }
         cmd.pop_debug_group();
 
-        self.queue.submit(iter::once(cmd.finish()));
-        output_texture.present();
+        cmd
+    }
+}
 
-        Ok(())
+penguin_util::bitflags! {
+    struct SomeFlags: u32 {
+        const A = 0b0;
+        const B = 0b1;
     }
 }
 
@@ -651,67 +687,116 @@ fn main() {
         .build(&event_loop)
         .unwrap();
 
-    let mut state = pollster::block_on(RendererState::new(&window));
+    let mut state = penguin_util::pollster::block_on(RendererState::new(&window));
 
-    let mut last_render_time = std::time::Instant::now();
+    // -----
+    let mut clock = time::Clock::start();
 
-    event_loop.run(move |event, _, control_flow| match event {
-        //
-        Event::DeviceEvent { ref event, .. } => {
-            state.input(event);
-        }
-        //
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == window.id() => {
-            match event {
-                //
-                WindowEvent::CloseRequested
-                | WindowEvent::KeyboardInput {
-                    input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
-                            ..
-                        },
-                    ..
-                } => *control_flow = ControlFlow::Exit,
-                //
-                WindowEvent::Resized(physical_size) => {
-                    state.resize(*physical_size);
-                }
-                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                    state.resize(**new_inner_size);
-                }
-                _ => {}
+    // egui -------
+
+    let mut editor = editor::EditorState::new(&state, &window);
+
+    event_loop.run(move |event, _, control_flow| {
+        // pass events to editor
+        editor.handle_event(&event);
+
+        match event {
+            //
+            Event::DeviceEvent { ref event, .. } => {
+                state.input(event);
             }
-        }
-        //
-        Event::MainEventsCleared => {
-            window.request_redraw();
-        }
-        //
-        Event::RedrawRequested(window_id) if window_id == window.id() => {
-            let now = std::time::Instant::now();
-            let dt = now - last_render_time;
-            last_render_time = now;
-            state.update(dt);
-
-            match state.render() {
-                Ok(_) => {}
-                Err(wgpu::SurfaceError::Lost) => {
-                    println!("Surface lost. Reconfiguring");
-                    state.resize(state.size);
+            //
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => {
+                match event {
+                    //
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => *control_flow = ControlFlow::Exit,
+                    //
+                    WindowEvent::Resized(physical_size) => {
+                        state.resize(*physical_size, None);
+                    }
+                    WindowEvent::ScaleFactorChanged {
+                        scale_factor,
+                        new_inner_size,
+                    } => {
+                        state.resize(**new_inner_size, Some(*scale_factor));
+                    }
+                    _ => {}
                 }
-                Err(wgpu::SurfaceError::OutOfMemory) => {
-                    eprintln!("Out of memory. Exiting");
-                    *control_flow = ControlFlow::Exit;
-                }
-                Err(e) => eprintln!("Surface error: {:?}", e),
             }
+            //
+            Event::MainEventsCleared => {
+                window.request_redraw();
+            }
+            //
+            Event::RedrawRequested(window_id) if window_id == window.id() => {
+                editor
+                    .platform
+                    .update_time(clock.start_time.elapsed().as_secs_f64());
+
+                // egui stuff ---------------
+                //
+
+                let dt = clock.tick();
+
+                state.update_camera_and_scene(dt);
+
+                {
+                    editor.update(
+                        &state,
+                        &window,
+                        &editor::FrameData {
+                            clock: &clock,
+                        }
+                    );
+                }
+
+                {
+                    // compute commands
+                    let cmd = state.compute_commands(&state.device, None);
+
+                    state.queue.submit(iter::once(cmd.finish()));
+                }
+
+                {
+                    // render commands
+
+                    // get frame surface texture to render to
+                    let render_result = state.render(|output| {
+                        let cmd = state.render_commands(&state.device, output, None);
+
+                        let cmd = editor.render_commands(&state.device, output, Some(cmd));
+
+                        state.queue.submit(iter::once(cmd.finish()));
+                    });
+
+                    match render_result {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost) => {
+                            println!("Surface lost. Reconfiguring");
+                            state.resize(state.size, None);
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            eprintln!("Out of memory. Exiting");
+                            *control_flow = ControlFlow::Exit;
+                        }
+                        Err(e) => eprintln!("Surface error: {:?}", e),
+                    };
+                }
+            }
+            //
+            _ => {}
         }
-        //
-        _ => {}
     });
 }

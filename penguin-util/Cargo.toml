@@ -9,3 +9,10 @@ edition = "2021"
 wgpu = "0.12"
 
 bytemuck = { version = "1.8", features = ["derive"] }
+
+bitflags = "1.3" # bitflags macro
+
+pollster = "0.2" # thread blocking without spinning
+
+# hashbrown = "0.12" # HashMap<K, V> implementation that is faster than std::HashMap
+# wyhash = "0.5" # fast hashing algorithm
