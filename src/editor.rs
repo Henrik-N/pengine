@@ -1,9 +1,17 @@
-use crate::time;
-use crate::RendererState;
+use crate::{
+    components, events, input, render_scene, time, GraphicsContext, RenderObject, RendererState,
+};
+use egui::Ui;
+use macaw as m;
+use penguin_util::handle::Handle;
+use std::fmt::Formatter;
+use wgpu::{CommandEncoder, Device, TextureView};
+use winit::event::Event;
 
 /// Data that the UI needs every frame
 pub struct FrameData<'a> {
     pub clock: &'a time::Clock,
+    pub world: &'a hecs::World,
 }
 
 /// Contains the necessary data for rendering and managing the editor and it's UI.
@@ -15,20 +23,22 @@ pub struct EditorState {
     screen_descriptor: egui_wgpu_backend::ScreenDescriptor,
     // ----------
     panels: Panels,
+    is_consuming_input: bool,
 }
 
 /// Contains all UI panels
 #[derive(Default)]
 struct Panels {
     stats: StatsPanel,
+    scene: ScenePanel,
 }
 
 impl EditorState {
-    pub fn new(state: &RendererState, window: &winit::window::Window) -> Self {
+    pub fn new(context: &GraphicsContext) -> Self {
         let screen_descriptor = egui_wgpu_backend::ScreenDescriptor {
-            physical_width: state.size.width as _,
-            physical_height: state.size.height as _,
-            scale_factor: window.scale_factor() as _, // todo: maybe add window.scale_factor() to support that
+            physical_width: context.size.width as _,
+            physical_height: context.size.height as _,
+            scale_factor: context.scale_factor as _,
         };
 
         let platform =
@@ -41,8 +51,11 @@ impl EditorState {
             });
 
         let render_pass = egui_wgpu_backend::RenderPass::new(
-            &state.device,
-            state.surface.get_preferred_format(&state.adapter).unwrap(),
+            &context.device,
+            context
+                .surface
+                .get_preferred_format(&context.adapter)
+                .unwrap(),
             1,
         );
 
@@ -52,48 +65,84 @@ impl EditorState {
             paint_jobs: vec![],
             screen_descriptor,
             panels: Panels::default(),
+            is_consuming_input: false,
         }
     }
 
-    pub fn handle_event<T>(&mut self, event: &winit::event::Event<T>) {
+    /// Called on a winit::event::Event
+    pub fn handle_platform_event<T>(&mut self, event: &winit::event::Event<T>) {
+        self.is_consuming_input = false;
+
         self.platform.handle_event(event);
+
+        if self.platform.context().wants_keyboard_input() {
+            self.is_consuming_input = true;
+        }
+
+        if self.platform.context().is_pointer_over_area() {
+            self.is_consuming_input = true;
+        }
+    }
+
+    /// Called on a PenguinEvent
+    pub fn on_event(&mut self, event: &events::PenguinEvent) -> bool {
+        use events::{event::WindowResizeEvent, PenguinEvent};
+
+        match event {
+            PenguinEvent::Window(WindowResizeEvent { size, scale_factor }) => {
+                self.screen_descriptor = egui_wgpu_backend::ScreenDescriptor {
+                    physical_width: size.width,
+                    physical_height: size.height,
+                    scale_factor: if let Some(scale_factor) = scale_factor {
+                        *scale_factor as f32
+                    } else {
+                        self.screen_descriptor.scale_factor
+                    },
+                };
+                false
+            }
+            PenguinEvent::Input(input::InputEvent::Key(input::KeyEvent { .. })) => {
+                self.is_consuming_input
+            }
+            // Key(input::KeyEvent { .. }) => self.is_consuming_input,
+            _ => false,
+        }
     }
 
     /// Update UI
     pub fn update(
         &mut self,
-        state: &RendererState,
+        context: &GraphicsContext,
         window: &winit::window::Window,
         frame_data: &FrameData,
     ) {
+        self.platform
+            .update_time(frame_data.clock.start_time.elapsed().as_secs_f64());
         self.platform.begin_frame();
 
-        let context = self.platform.context();
-
-        self.draw_ui(&context, frame_data);
+        self.draw_ui(&self.platform.context(), frame_data);
 
         let (_output, paint_commands) = self.platform.end_frame(Some(window));
         self.paint_jobs = self.platform.context().tessellate(paint_commands);
 
-        // upload gpu resources
-        self.screen_descriptor = egui_wgpu_backend::ScreenDescriptor {
-            physical_width: state.size.width,
-            physical_height: state.size.height,
-            scale_factor: window.scale_factor() as _,
-        };
-        self.render_pass.update_texture(
-            &state.device,
-            &state.queue,
-            &self.platform.context().font_image(),
-        );
-        self.render_pass
-            .update_user_textures(&state.device, &state.queue);
-        self.render_pass.update_buffers(
-            &state.device,
-            &state.queue,
-            &self.paint_jobs,
-            &self.screen_descriptor,
-        );
+        {
+            // upload gpu resources
+            self.render_pass.update_texture(
+                &context.device,
+                &context.queue,
+                &self.platform.context().font_image(),
+            );
+
+            self.render_pass
+                .update_user_textures(&context.device, &context.queue);
+
+            self.render_pass.update_buffers(
+                &context.device,
+                &context.queue,
+                &self.paint_jobs,
+                &self.screen_descriptor,
+            );
+        }
     }
 
     pub fn render_commands(
@@ -126,8 +175,13 @@ impl EditorState {
 impl EditorState {
     fn draw_ui(&mut self, context: &egui::CtxRef, frame_data: &FrameData) {
         Self::top_bar(context, &mut self.panels);
+
         if self.panels.stats.enabled {
             self.panels.stats.update(context, frame_data);
+        }
+
+        if self.panels.scene.enabled {
+            self.panels.scene.update(context, frame_data);
         }
     }
 
@@ -136,10 +190,11 @@ impl EditorState {
             egui::trace!(ui);
 
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut panels.stats.enabled, "💻 General");
-                ui.separator();
+                egui::widgets::global_dark_light_mode_switch(ui);
 
                 if cfg!(debug_assertions) {
+                    ui.separator();
+
                     ui.label(
                         egui::RichText::new("Debug build")
                             .small()
@@ -148,9 +203,49 @@ impl EditorState {
                     .on_hover_text("This is a debug build of penguin engine.");
                 }
 
-                egui::widgets::global_dark_light_mode_switch(ui);
+                ui.separator();
+
+                ui.checkbox(&mut panels.stats.enabled, "💻 General");
+
+                ui.checkbox(&mut panels.scene.enabled, "Scene");
             });
         });
+    }
+}
+
+#[derive(Default)]
+struct ScenePanel {
+    enabled: bool,
+    transform: components::Transform,
+    selected_entity: Option<hecs::Entity>,
+}
+impl ScenePanel {
+    fn update(&mut self, context: &egui::CtxRef, frame_data: &FrameData) {
+        egui::SidePanel::right("scene panel")
+            .default_width(250.)
+            .show(context, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.heading("Scene");
+                    ui.separator();
+                });
+
+                for e in frame_data.world.iter() {
+                    if let Some(entity_name) = e.get::<components::EntityName>() {
+                        if ui.small_button(&entity_name.0).clicked() {
+                            self.selected_entity = Some(e.entity());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(e) = self.selected_entity {
+                    let entity_ref = frame_data.world.entity(e).unwrap();
+
+                    components::penguin_entity_ui(entity_ref, ui);
+                }
+
+                ui.separator();
+            });
     }
 }
 
@@ -337,9 +432,10 @@ impl FrameTimeHistory {
 
                 self.graph(ui);
 
-                // graph style selection
-                ui.radio_value(&mut self.graph_style, GraphStyle::Histogram, "Histogram");
-                ui.radio_value(&mut self.graph_style, GraphStyle::LineGraph, "LineGraph");
+                ui.horizontal_wrapped(|ui| {
+                    ui.radio_value(&mut self.graph_style, GraphStyle::Histogram, "Histogram");
+                    ui.radio_value(&mut self.graph_style, GraphStyle::LineGraph, "LineGraph");
+                });
             });
     }
 
@@ -349,12 +445,6 @@ impl FrameTimeHistory {
             clock.last_delta_time.as_secs_f32(),
         );
     }
-}
-
-#[derive(Copy, Clone)]
-pub struct TimeData {
-    pub now: f64,
-    pub previous_frame_time: Option<f32>,
 }
 
 impl StatsPanel {
@@ -367,16 +457,6 @@ impl StatsPanel {
             ui.vertical_centered(|ui| {
                 ui.heading("💻 Stats");
             });
-
-            ui.separator();
-
-            let reset_button = ui
-                .button("Reset UI")
-                .on_hover_text("Reset UI to default state");
-
-            if reset_button.clicked() {
-                *context.memory() = std::default::Default::default();
-            }
 
             ui.separator();
 

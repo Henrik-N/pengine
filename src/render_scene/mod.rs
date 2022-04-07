@@ -72,8 +72,6 @@ pub struct RenderScene {
     // --------------------------------------
     //
     //
-    // ---- Draw data --------------------------------
-    //
     // ----- Draw buffers -------------------
     //
     /// Buffer containing all the batched draw calls, with instance count set to 0.
@@ -199,7 +197,11 @@ impl RenderScene {
         render_object
     }
 
-    pub fn update_transform(&mut self, render_object: Handle<RenderObject>, transform: m::Mat4) {
+    pub fn update_transform_model_matrix(
+        &mut self,
+        render_object: Handle<RenderObject>,
+        transform: m::Mat4,
+    ) {
         self.render_objects[render_object].transform = transform;
 
         self.render_objects_to_update.push(render_object);

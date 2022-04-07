@@ -33,6 +33,9 @@ egui = "0.16"
 egui_winit_platform = "0.13"
 egui_wgpu_backend = "0.16"
 
+# ecs -----------
+hecs = "0.7.6"
+
 [build-dependencies]
 anyhow = "1.0" # error handling
 fs_extra = "1.2" # extends std::fs and std::io

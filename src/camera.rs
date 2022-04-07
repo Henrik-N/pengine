@@ -1,3 +1,4 @@
+use crate::{events, input};
 use macaw as m;
 use winit::event::{ElementState, VirtualKeyCode};
 
@@ -116,6 +117,7 @@ pub struct CameraController {
     pitch_amount: f32,
     speed: f32,
     sensitivity: f32,
+    mouse_key_down: bool,
 }
 impl CameraController {
     pub fn new(speed: f32, sensitivity: f32) -> Self {
@@ -130,49 +132,70 @@ impl CameraController {
             pitch_amount: 0.0,
             speed,
             sensitivity,
+            mouse_key_down: false,
         }
     }
 
-    pub fn process_key_events(&mut self, key: VirtualKeyCode, state: ElementState) -> bool {
-        let amount = if state == ElementState::Pressed {
+    pub fn on_event(&mut self, event: &events::PenguinEvent) -> bool {
+        match event {
+            events::PenguinEvent::Input(input_event) => match input_event {
+                input::InputEvent::Key(e) => self.process_key_events(e.key, e.state),
+                input::InputEvent::MouseMotion(delta) => {
+                    if self.mouse_key_down {
+                        self.process_mouse_delta_events(delta.0, delta.1);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+
+        false
+    }
+
+    fn process_mouse_delta_events(&mut self, dx: f64, dy: f64) {
+        self.yaw_amount = dx as _;
+        self.pitch_amount = dy as _;
+    }
+
+    fn process_key_events(&mut self, key: input::Key, state: input::KeyState) {
+        use crate::input::Key;
+
+        let amount = if state == crate::input::KeyState::Down {
             1.0
         } else {
             0.0
         };
 
-        type Key = VirtualKeyCode;
         match key {
             Key::A | Key::Left => {
                 self.left_amount = amount;
-                true
+                //true
             }
             Key::D | Key::Right => {
                 self.right_amount = amount;
-                true
             }
             Key::W | Key::Up => {
                 self.forward_amount = amount;
-                true
             }
             Key::S | Key::Down => {
                 self.backward_amount = amount;
-                true
             }
             Key::E | Key::Space => {
                 self.up_amount = amount;
-                true
             }
             Key::Q | Key::LControl => {
                 self.down_amount = amount;
-                true
             }
-            _ => false,
+            Key::LMouseButton => {
+                self.mouse_key_down = if state == crate::input::KeyState::Down {
+                    true
+                } else {
+                    false
+                };
+            }
+            _ => {}
         }
-    }
-
-    pub fn process_mouse_delta_events(&mut self, dx: f64, dy: f64) {
-        self.yaw_amount = dx as _;
-        self.pitch_amount = dy as _;
     }
 
     fn update_transform(&mut self, camera: &mut Camera, dt: std::time::Duration) {
