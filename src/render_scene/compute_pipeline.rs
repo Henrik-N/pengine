@@ -13,7 +13,7 @@ pub const BIND_GROUP_LAYOUT_DESC: wgpu::BindGroupLayoutDescriptor =
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
                     min_binding_size: wgpu::BufferSize::new(
-                        mem::size_of::<camera::CameraUniform>() as _,
+                        mem::size_of::<camera::CameraUniformData>() as _,
                     ),
                 },
                 count: None,

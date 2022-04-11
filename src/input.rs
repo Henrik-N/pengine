@@ -1,5 +1,3 @@
-use macaw as m;
-
 #[derive(Debug, Copy, Clone)]
 pub enum InputEvent {
     Key(KeyEvent),
@@ -113,7 +111,6 @@ pub enum Key {
     BackSpace,
     Return,
     Space,
-    Caret,
     Numlock,
     Numpad0,
     Numpad1,
@@ -210,7 +207,8 @@ impl Key {
             VirtualKeyCode::F8 => Some(Self::F8),
             VirtualKeyCode::F9 => Some(Self::F9),
             VirtualKeyCode::F10 => Some(Self::F10),
-            VirtualKeyCode::F11 => Some(Self::F12),
+            VirtualKeyCode::F11 => Some(Self::F11),
+            VirtualKeyCode::F12 => Some(Self::F12),
             VirtualKeyCode::Snapshot => Some(Self::PrintScreen),
             VirtualKeyCode::Scroll => Some(Self::ScrollLock),
             VirtualKeyCode::Pause => Some(Self::PauseBreak),

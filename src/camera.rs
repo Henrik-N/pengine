@@ -1,6 +1,5 @@
 use crate::{events, input};
 use macaw as m;
-use winit::event::{ElementState, VirtualKeyCode};
 
 /// Tau / 4
 const FRAC_TAU_4: f32 = std::f32::consts::FRAC_PI_2;
@@ -10,7 +9,7 @@ pub struct EditorCamera {
     camera: Camera,
     pub projection: PerspectiveProjection,
     pub controller: CameraController,
-    pub uniform_data: CameraUniform,
+    pub uniform_data: CameraUniformData,
 }
 impl EditorCamera {
     pub fn init(config: &wgpu::SurfaceConfiguration) -> Self {
@@ -28,7 +27,7 @@ impl EditorCamera {
             z_far: 100.0,
         };
 
-        let mut uniform_data = CameraUniform::new();
+        let mut uniform_data = CameraUniformData::new();
         uniform_data.update_view_proj(&camera, &projection);
 
         Self {
@@ -49,13 +48,13 @@ impl EditorCamera {
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct CameraUniform {
+pub struct CameraUniformData {
     pub view_proj: m::Mat4,
 }
-unsafe impl bytemuck::Pod for CameraUniform {}
-unsafe impl bytemuck::Zeroable for CameraUniform {}
+unsafe impl bytemuck::Pod for CameraUniformData {}
+unsafe impl bytemuck::Zeroable for CameraUniformData {}
 
-impl CameraUniform {
+impl CameraUniformData {
     pub fn new() -> Self {
         Self {
             view_proj: m::Mat4::IDENTITY,
@@ -145,7 +144,6 @@ impl CameraController {
                         self.process_mouse_delta_events(delta.0, delta.1);
                     }
                 }
-                _ => {}
             },
             _ => {}
         }

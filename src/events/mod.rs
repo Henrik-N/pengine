@@ -1,12 +1,10 @@
 use crate::input;
-use std::sync::Arc;
 use winit::event_loop::EventLoopProxy;
 
 #[derive(Debug)]
 pub enum PenguinEvent {
     Input(input::InputEvent),
     Window(event::WindowResizeEvent),
-    Editor(event::EditorEvent),
 }
 
 pub struct PenguinEventProxy(pub std::sync::Mutex<winit::event_loop::EventLoopProxy<PenguinEvent>>);
@@ -55,8 +53,5 @@ pub mod event {
         pub scale_factor: Option<f64>,
     }
 
-    #[derive(Debug)]
-    pub enum EditorEvent {
-        None,
-    }
+    pub use crate::input::InputEvent;
 }

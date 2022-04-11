@@ -33,8 +33,15 @@ egui = "0.16"
 egui_winit_platform = "0.13"
 egui_wgpu_backend = "0.16"
 
+
+downcast-rs = "1.2.0"
+atomic_refcell = "0.1.8"
+
+
 # ecs -----------
-hecs = "0.7.6"
+legion = "0.4.0"
+# hecs = "0.7.6"
+# hecs-schedule = "0.6.1"
 
 [build-dependencies]
 anyhow = "1.0" # error handling

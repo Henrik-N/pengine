@@ -137,7 +137,7 @@ impl RenderScene {
         //
         let render_objects_buffer = create_render_objects_buffer(device, MAX_DRAW_COMMANDS);
 
-        // instance buffers
+        // instance buffers -------------------
         //
         let instance_buffer = create_instance_buffer(device, MAX_DRAW_COMMANDS);
 
@@ -202,6 +202,7 @@ impl RenderScene {
         render_object: Handle<RenderObject>,
         transform: m::Mat4,
     ) {
+        // todo RwLock?
         self.render_objects[render_object].transform = transform;
 
         self.render_objects_to_update.push(render_object);
