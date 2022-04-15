@@ -1,9 +1,11 @@
 ///! This module contains structs that stores the data and handles to GPU data that is used to render a scene.
 pub mod compute_pipeline;
-mod mesh_pass;
+pub(crate) mod mesh_pass;
 
 use crate::render_scene::mesh_pass::{IndirectBatch, PassObject};
-use crate::{mesh, RenderInstance, VertexArrayBuffer};
+use crate::{mesh, GraphicsContext, RenderInstance, VertexArrayBuffer};
+use legion::systems::{CommandBuffer, Step};
+use legion::Resources;
 use macaw as m;
 use penguin_util as util;
 use penguin_util::handle::HandleMap;
@@ -19,7 +21,8 @@ use util::GpuBuffer;
 pub struct RenderObjectDescriptor {
     /// The mesh ID is corresponding to a mesh asset's index in the mesh_assets array on RenderScene
     /// creation.
-    pub mesh_id: usize,
+    // pub mesh_id: usize,
+    pub mesh_handle: Handle<mesh::Mesh>,
     /// The initial transform of this object.
     pub transform: m::Mat4,
     /// The render bounds of this object (for culling).
@@ -32,13 +35,13 @@ pub struct RenderObjectDescriptor {
 
 /// Data for an object in the scene.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct RenderObject {
     pub mesh: Handle<mesh::Mesh>,
     // material: usize,
     pub transform: m::Mat4,
     // pub render_bounds: mesh::RenderBounds,
-    draw_command_index: u32, // todo Should actually just be in PassObject
+    pub(crate) draw_command_index: u32, // todo Should actually just be in PassObject
 }
 unsafe impl bytemuck::Pod for RenderObject {}
 unsafe impl bytemuck::Zeroable for RenderObject {}
@@ -175,14 +178,14 @@ impl RenderScene {
 
     /// Adds a RenderObject to the scene and adds it to the listed mesh passes.
     pub fn register_object(&mut self, desc: &RenderObjectDescriptor) -> Handle<RenderObject> {
-        let mesh_handle = if self.meshes.get(desc.mesh_id).is_some() {
-            Handle::<mesh::Mesh>::from(desc.mesh_id)
-        } else {
-            panic!("no mesh with id {} in the render scene", desc.mesh_id)
-        };
+        // let mesh_handle = if self.meshes.get(desc.mesh_id).is_some() {
+        //     Handle::<mesh::Mesh>::from(desc.mesh_id)
+        // } else {
+        //     panic!("no mesh with id {} in the render scene", desc.mesh_id)
+        // };
 
         let render_object: Handle<RenderObject> = self.render_objects.push(RenderObject {
-            mesh: mesh_handle,
+            mesh: desc.mesh_handle,
             transform: desc.transform,
             draw_command_index: 0,
         });
@@ -291,7 +294,7 @@ fn create_draw_indirect_buffers(
     let out_draw_commands_buffer =
         device.create_buffer_t::<DrawIndexedIndirect>(&wgpu::BufferDescriptor {
             label: Some("draw indirect buffer"),
-            size: (std::mem::size_of::<DrawIndexedIndirect>() * MAX_DRAW_COMMANDS) as _,
+            size,
             usage: wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST,

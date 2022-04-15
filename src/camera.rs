@@ -1,19 +1,21 @@
 use crate::{events, input};
+use legion::systems::CommandBuffer;
+use legion::{Entity, Resources};
 use macaw as m;
 
 /// Tau / 4
 const FRAC_TAU_4: f32 = std::f32::consts::FRAC_PI_2;
 
 /// Data related to the editor camera
-pub struct EditorCamera {
-    camera: Camera,
+pub struct MainCamera {
+    camera: CameraLocationOrientation,
     pub projection: PerspectiveProjection,
     pub controller: CameraController,
     pub uniform_data: CameraUniformData,
 }
-impl EditorCamera {
+impl MainCamera {
     pub fn init(config: &wgpu::SurfaceConfiguration) -> Self {
-        let camera = Camera::new(
+        let camera = CameraLocationOrientation::new(
             (0.0, 5.0, 10.0).into(),
             f32::to_radians(-90.),
             f32::to_radians(-20.),
@@ -61,17 +63,21 @@ impl CameraUniformData {
         }
     }
 
-    pub fn update_view_proj(&mut self, camera: &Camera, proj: &PerspectiveProjection) {
+    pub fn update_view_proj(
+        &mut self,
+        camera: &CameraLocationOrientation,
+        proj: &PerspectiveProjection,
+    ) {
         self.view_proj = proj.perspective_matrix() * camera.view_matrix();
     }
 }
 
-pub struct Camera {
+pub struct CameraLocationOrientation {
     pub position: m::Vec3,
     yaw: f32,   // rads
     pitch: f32, // rads
 }
-impl Camera {
+impl CameraLocationOrientation {
     pub fn new(eye_position: m::Vec3, yaw: f32, pitch: f32) -> Self {
         Self {
             position: eye_position,
@@ -168,7 +174,6 @@ impl CameraController {
         match key {
             Key::A | Key::Left => {
                 self.left_amount = amount;
-                //true
             }
             Key::D | Key::Right => {
                 self.right_amount = amount;
@@ -196,7 +201,11 @@ impl CameraController {
         }
     }
 
-    fn update_transform(&mut self, camera: &mut Camera, dt: std::time::Duration) {
+    fn update_transform(
+        &mut self,
+        camera: &mut CameraLocationOrientation,
+        dt: std::time::Duration,
+    ) {
         let dt = dt.as_secs_f32();
 
         // Move forwards/backwards and left/right

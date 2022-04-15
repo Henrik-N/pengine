@@ -82,7 +82,7 @@ impl MeshPass {
         let new_render_batches: Vec<RenderBatch> = {
             self.objects.reserve(self.unbatched_objects.len());
 
-            println!("adding render objects...");
+            println!("MeshPass: adding render objects...");
             let mut index = 0;
             let new_render_batches = self
                 .unbatched_objects
@@ -112,6 +112,9 @@ impl MeshPass {
                     }
                 })
                 .collect::<Vec<_>>();
+
+            self.unbatched_objects.clear();
+
             println!("\n");
 
             new_render_batches

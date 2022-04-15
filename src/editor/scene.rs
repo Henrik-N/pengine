@@ -17,7 +17,7 @@ impl ScenePanel {
                     ui.separator();
                 });
 
-                let mut query = <(legion::Entity, &components::EntityName)>::query();
+                let mut query = <(legion::Entity, &components::Name)>::query();
 
                 for (ent, name) in query.iter(frame_data.l_world) {
                     if ui.small_button(&name.0).clicked() {

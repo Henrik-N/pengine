@@ -4,7 +4,7 @@ use crate::editor::ComponentEditor;
 mod entity_name {
     use super::*;
 
-    impl ComponentEditor for EntityName {
+    impl ComponentEditor for Name {
         type ComponentEditorState = ();
 
         fn init_component_editor_state(&self) -> Self::ComponentEditorState {

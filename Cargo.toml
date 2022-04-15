@@ -36,7 +36,7 @@ egui_wgpu_backend = "0.16"
 
 downcast-rs = "1.2.0"
 atomic_refcell = "0.1.8"
-
+arrayvec = "0.7.2"
 
 # ecs -----------
 legion = "0.4.0"

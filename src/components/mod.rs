@@ -4,13 +4,13 @@ use egui::Ui;
 use macaw as m;
 
 /// The name of an entity.
-pub struct EntityName(pub String);
-impl From<&str> for EntityName {
+pub struct Name(pub String);
+impl From<&str> for Name {
     fn from(str: &str) -> Self {
         Self(str.to_owned())
     }
 }
-impl std::fmt::Display for EntityName {
+impl std::fmt::Display for Name {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -37,3 +37,6 @@ mod transform {
     impl_deref!(mut Scale, m::Vec3);
     impl_default!(Scale, Self(m::Vec3::ONE));
 }
+
+type MeshAssetIndex = usize;
+pub struct MeshComponent(pub MeshAssetIndex);

@@ -83,7 +83,7 @@ impl GraphicsContext {
         }
     }
 
-    fn on_resize(&mut self, size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f64>) {
+    pub fn on_resize(&mut self, size: winit::dpi::PhysicalSize<u32>, scale_factor: Option<f64>) {
         assert_ne!(size.width, 0);
         assert_ne!(size.height, 0);
 

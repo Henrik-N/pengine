@@ -1236,6 +1236,7 @@ name = "penguin_engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "atomic_refcell",
  "bytemuck",
  "downcast-rs",

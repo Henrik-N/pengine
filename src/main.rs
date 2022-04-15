@@ -30,6 +30,7 @@ use penguin_util::{
     handle::Handle, raw_gpu_types::DrawIndirectCount, GpuBuffer, GpuBufferDeviceExt,
 };
 
+use crate::bind_groups::DeviceExt;
 use crate::layer::Layer;
 use legion::systems::CommandBuffer;
 use std::mem::transmute;
@@ -98,7 +99,7 @@ pub struct RendererState {
     // A texture.
     _cube_texture: texture::Texture,
     /// Editor camera data.
-    camera: camera::EditorCamera,
+    camera: camera::MainCamera,
     /// Uniform buffer.
     uniform_buffer: GpuBuffer<camera::CameraUniformData>,
     /// The currently loaded RenderScene.
@@ -173,7 +174,7 @@ impl RendererState {
         let components_ui_storage = {
             use components::*;
             let mut s = editor::EditorComponentStorage::default();
-            s.register_component_editor::<EntityName>();
+            s.register_component_editor::<Name>();
             s.register_component_editor::<Translation>();
             s.register_component_editor::<Rotation>();
             s.register_component_editor::<Scale>();
@@ -206,7 +207,7 @@ impl RendererState {
                 render_obj: Handle<render_scene::RenderObject>,
                 transf: Transf,
             ) -> legion::Entity {
-                let name = components::EntityName::from(name);
+                let name = components::Name::from(name);
 
                 match transf {
                     Transf::T => cmd.push((name, render_obj, components::Translation::default())),
@@ -234,7 +235,8 @@ impl RendererState {
             // register render objects
             //
             let mut render_obj_desc = RenderObjectDescriptor {
-                mesh_id: 0,
+                // mesh_id: 0,
+                mesh_handle: Handle::from(0),
                 transform: m::Mat4::IDENTITY,
                 render_bounds: mesh::RenderBounds {
                     origin: m::Vec3::ZERO,
@@ -246,7 +248,7 @@ impl RendererState {
             let cube_object = scene.register_object(&render_obj_desc);
             let cube_object2 = scene.register_object(&render_obj_desc);
 
-            render_obj_desc.mesh_id = 1;
+            render_obj_desc.mesh_handle = Handle::from(1);
             let cone_object = scene.register_object(&render_obj_desc);
             let cone_object2 = scene.register_object(&render_obj_desc);
             let test_object = scene.register_object(&render_obj_desc);
@@ -267,7 +269,7 @@ impl RendererState {
 
         cmd.flush(&mut l_world, &mut l_resources);
 
-        let camera = camera::EditorCamera::init(&context.config);
+        let camera = camera::MainCamera::init(&context.config);
 
         let uniform_buffer = context
             .device
@@ -277,70 +279,25 @@ impl RendererState {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
 
-        let vertex_shader_bind_group_layout =
-            context
-                .device
-                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("camera bind group"),
-                    entries: &[
-                        // camera uniform
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::VERTEX,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Uniform,
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        // render objects
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::VERTEX,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                        // instance_index to render_object map
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::VERTEX,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
-                    ],
-                });
+        const VERTEX: wgpu::ShaderStages = wgpu::ShaderStages::VERTEX;
+        const READ: bool = true;
+        const READ_WRITE: bool = false;
 
-        let camera_bind_group = context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &vertex_shader_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: scene.render_objects_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: scene
-                            .instance_index_to_render_object_map
-                            .as_entire_binding(),
-                    },
-                ],
-            });
+        let vertex_shader_bind_group_layout = bind_groups::BindGroupLayoutBuilder::<3>::builder()
+            .uniform_buffer(0, VERTEX) // camera uniform
+            .storage_buffer(1, VERTEX, READ) // render objects
+            .storage_buffer(2, VERTEX, READ) // instance_index to render_object map
+            .build(&context.device, Some("vertex bind group layout"));
+
+        let camera_bind_group = bind_groups::BindGroupBuilder::<3>::builder()
+            .buffer(0, &uniform_buffer)
+            .buffer(1, &scene.render_objects_buffer)
+            .buffer(2, &scene.instance_index_to_render_object_map)
+            .build(
+                &context.device,
+                Some("vertex bind group"),
+                &vertex_shader_bind_group_layout,
+            );
 
         let render_pipeline = {
             let shader = context
@@ -425,20 +382,31 @@ impl RendererState {
                 source: wgpu::ShaderSource::Wgsl(include_str!("shaders/compute.wgsl").into()),
             });
 
-        let compute_bind_group_layout = context
-            .device
-            .create_bind_group_layout(&render_scene::compute_pipeline::BIND_GROUP_LAYOUT_DESC);
+        const COMPUTE: wgpu::ShaderStages = wgpu::ShaderStages::COMPUTE;
 
-        let compute_bind_group = context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("compute bind group"),
-                layout: &compute_bind_group_layout,
-                entries: &render_scene::compute_pipeline::bind_group_entries(
-                    &uniform_buffer,
-                    &scene,
-                ),
-            });
+        let compute_bind_group_layout = bind_groups::BindGroupLayoutBuilder::<7>::builder()
+            .uniform_buffer(0, COMPUTE)
+            .storage_buffer(1, COMPUTE, READ)
+            .storage_buffer(2, COMPUTE, READ)
+            .storage_buffer(3, COMPUTE, READ_WRITE)
+            .storage_buffer(4, COMPUTE, READ_WRITE)
+            .storage_buffer(5, COMPUTE, READ_WRITE)
+            .storage_buffer(6, COMPUTE, READ_WRITE)
+            .build(&context.device, Some("compute bind group layout"));
+
+        let compute_bind_group = bind_groups::BindGroupBuilder::<7>::builder()
+            .buffer(0, &uniform_buffer)
+            .buffer(1, &scene.draw_commands_buffer)
+            .buffer(2, &scene.render_objects_buffer)
+            .buffer(3, &scene.compute_shader_local_data_buffer)
+            .buffer(4, &scene.draw_count_buffer)
+            .buffer(5, &scene.out_draw_commands_buffer)
+            .buffer(6, &scene.instance_index_to_render_object_map)
+            .build(
+                &context.device,
+                Some("compute bind group"),
+                &compute_bind_group_layout,
+            );
 
         let compute_pipeline_layout =
             context
@@ -464,9 +432,6 @@ impl RendererState {
             bind_group: compute_bind_group,
         };
 
-        /// let layer = Test {
-        ///
-        /// };
         Self {
             compute,
             render,
@@ -731,8 +696,8 @@ impl RendererState {
 }
 
 fn main() {
-    main_without_layers();
-    //main_with_layers();
+    // main_without_layers();
+    main_with_layers();
 }
 
 /// Entry point.
@@ -943,18 +908,83 @@ fn main_with_layers() {
     let mut world = legion::World::default();
     let mut resources = legion::Resources::default();
 
-    let mut context = penguin_util::pollster::block_on(GraphicsContext::new(&window));
-    resources.insert(context);
-
     let mut cmd = legion::systems::CommandBuffer::new(&world);
 
-    layer::RendererLayer::init(&mut cmd, &mut resources);
+    // layers -------
+    layer::ApplicationLayer.init(&mut cmd, &mut resources);
+    layer::SceneLayer.init(&mut cmd, &mut resources);
+    cmd.flush(&mut world, &mut resources);
 
-    let steps = layer::RendererLayer::run_steps();
+    layer::BaseRenderSceneLayer {
+        window: &window,
+        mesh_assets: &["cube.obj", "cone.obj"],
+    }
+    .init(&mut cmd, &mut resources);
+
+    layer::PipelinesLayer.init(&mut cmd, &mut resources);
+
+    cmd.flush(&mut world, &mut resources);
+
+    let mut startup_steps = Vec::new();
+    startup_steps.extend(layer::BaseRenderSceneLayer::startup_steps().unwrap());
+    let mut startup_schedule = legion::systems::Schedule::from(startup_steps);
+    startup_schedule.execute(&mut world, &mut resources);
+
+    // steps ---------
+    let mut steps = Vec::new();
+    steps.extend(layer::ApplicationLayer::run_steps().unwrap());
+    steps.extend(layer::SceneLayer::run_steps().unwrap());
+
+    steps.extend(layer::BaseRenderSceneLayer::run_steps().unwrap());
+    steps.extend(layer::PipelinesLayer::run_steps().unwrap());
 
     let mut schedule = legion::systems::Schedule::from(steps);
 
-    schedule.execute(&mut world, &mut resources);
+    event_loop.run(move |event, _, control_flow| {
+        use winit::event::Event;
+
+        match event {
+            Event::MainEventsCleared => {
+                window.request_redraw();
+            }
+            Event::RedrawRequested(window_id) if window_id == window.id() => {
+                schedule.execute(&mut world, &mut resources);
+            }
+            Event::WindowEvent {
+                ref event,
+                window_id,
+            } if window_id == window.id() => {
+                match event {
+                    //
+                    WindowEvent::CloseRequested
+                    | WindowEvent::KeyboardInput {
+                        input:
+                            KeyboardInput {
+                                state: ElementState::Pressed,
+                                virtual_keycode: Some(VirtualKeyCode::Escape),
+                                ..
+                            },
+                        ..
+                    } => *control_flow = ControlFlow::Exit,
+                    //
+                    WindowEvent::Resized(physical_size) => {
+                        let mut context = resources.get_mut::<GraphicsContext>().unwrap();
+                        context.on_resize(*physical_size, None);
+                    }
+                    WindowEvent::ScaleFactorChanged {
+                        scale_factor,
+                        new_inner_size,
+                    } => {
+                        let mut context = resources.get_mut::<GraphicsContext>().unwrap();
+                        context.on_resize(**new_inner_size, Some(*scale_factor as _));
+                    }
+                    _ => {}
+                }
+            }
+
+            _ => {}
+        }
+    });
 
     // ..
 }
