@@ -51,8 +51,6 @@ impl Layer for PipelinesLayer {
         let queue = &context.queue;
         let config = &context.config;
 
-
-
         // --------
         let main_camera = MainCamera::init(config); // todo: Maybe remake into an entity
         let uniform_buffer = UniformBuffer::init(device, &main_camera.uniform_data);
@@ -75,8 +73,7 @@ impl Layer for PipelinesLayer {
                     .build(device, Some("vertex bind group layout"));
 
                 let render_objects = r.get::<RenderObjectsBuffer>().unwrap();
-                let instance_map =
-                    r.get::<InstanceIndexToRenderObjectMapBuffer>().unwrap();
+                let instance_map = r.get::<InstanceIndexToRenderObjectMapBuffer>().unwrap();
 
                 let vertex_bind_group = bind_groups::BindGroupBuilder::<3>::builder()
                     .buffer(0, &uniform_buffer.buffer)
@@ -257,14 +254,16 @@ impl Layer for PipelinesLayer {
 
     fn run_steps() -> Option<Vec<Step>> {
         Some(
-            uniform_buffer::steps().into_iter()
+            uniform_buffer::steps()
+                .into_iter()
                 .chain(
                     Schedule::builder()
                         .add_system(compute_commands_system())
                         .add_system(render_commands_system())
                         .build()
                         .into_vec(),
-                ).collect::<Vec<_>>()
+                )
+                .collect::<Vec<_>>(),
         )
     }
 }
@@ -287,10 +286,7 @@ mod uniform_buffer {
     }
 
     #[system]
-    fn update_main_camera(
-        #[resource] main_camera: &mut MainCamera,
-        #[resource] dt: &Time,
-    ) {
+    fn update_main_camera(#[resource] main_camera: &mut MainCamera, #[resource] dt: &Time) {
         main_camera.update(dt.delta_time());
     }
 
@@ -355,7 +351,6 @@ fn compute_commands(
 
     queue.submit(iter::once(cmd.finish()));
 }
-
 
 #[system]
 fn render_commands(

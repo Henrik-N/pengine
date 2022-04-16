@@ -1,6 +1,5 @@
 ///! Systems to update cpu-side render objects data and mark the updated data as "should reupload to gpu memory".
 // todo: Separate model matrices from the render objects.
-
 use super::*;
 use crate::components::{Rotation, Scale, Translation};
 use legion::component;

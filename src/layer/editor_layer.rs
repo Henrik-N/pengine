@@ -1,12 +1,11 @@
-use legion::Resources;
-use legion::systems::{CommandBuffer, Step};
 use crate::Layer;
+use legion::systems::{CommandBuffer, Step};
+use legion::Resources;
 
 pub struct EditorLayer;
 
 impl Layer for EditorLayer {
     fn init(self, cmd: &mut CommandBuffer, r: &mut Resources) {
-
         todo!()
     }
 

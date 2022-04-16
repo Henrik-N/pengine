@@ -1,5 +1,5 @@
-use std::ops::DerefMut;
 use crate::input;
+use std::ops::DerefMut;
 use winit::event_loop::EventLoopProxy;
 
 #[derive(Debug)]
@@ -79,14 +79,9 @@ enum State {
     B,
 }
 
-
 pub struct EventWrites<EventType> {
     writes: Vec<Event<EventType>>,
-
 }
-
-
-
 
 /// Resource containing events of type T
 pub struct Events<EventType> {
@@ -113,7 +108,10 @@ impl<T> Events<T> {
     pub fn send(&mut self, event: T) {
         let event_id = EventId(self.event_count);
 
-        let event_instance = Event { event_id: event_id, event, };
+        let event_instance = Event {
+            event_id: event_id,
+            event,
+        };
 
         match self.state {
             State::A => self.events_a.push(event_instance),
@@ -133,35 +131,22 @@ impl<T> Events<T> {
 //     }
 // }
 
-
 // pub struct EventWriter<'a, EventType: ?Sized + 'a> {
 //     events: atomic_refcell::AtomicRefCell<EventType>,
 // }
-
 
 // pub struct EventWriter<EventType> {
 //     events: atomic_refcell::AtomicRefMut<Events<'a, EventType>>,
 //     // &'static mut Events<EventType>
 // }
 
-
 // pub struct EventWriter<'a, EventType, EventsWriter: Events<EventType>> {
 //
 // }
-
-
 
 // pub struct EventWriter<EventType: legion::systems::Resource> {
 //     events: Events<EventType>,
 // }
 
-
-
-
-
 #[test]
-fn test_events() {
-
-}
-
-
+fn test_events() {}

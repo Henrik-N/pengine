@@ -43,6 +43,17 @@ legion = "0.4.0"
 # hecs = "0.7.6"
 # hecs-schedule = "0.6.1"
 
+
+# bevy ---------
+bevy_app = "0.7" # scheduler
+bevy_log = "0.7" # logger
+bevy_ecs = "0.7" # ecs
+bevy_winit = { version = "0.7", features = ["x11"] }
+bevy_window = "0.7"
+bevy_input = "0.7.0"
+
+
+
 [build-dependencies]
 anyhow = "1.0" # error handling
 fs_extra = "1.2" # extends std::fs and std::io

@@ -1,9 +1,9 @@
 use crate::{m, Layer};
-use legion::systems::{CommandBuffer, Step};
-use legion::{component, system, Entity, Resources, Schedule, Query};
-use std::collections::HashMap;
 use atomic_refcell::{AtomicRef, AtomicRefCell, AtomicRefMut};
+use legion::systems::{CommandBuffer, Step};
 use legion::world::SubWorld;
+use legion::{component, system, Entity, Query, Resources, Schedule};
+use std::collections::HashMap;
 
 // contains mesh index (todo: temp)
 use crate::components::*;
@@ -17,7 +17,7 @@ pub struct SceneEntityHandles(Vec<Entity>);
 
 enum WriteState {
     A,
-    B
+    B,
 }
 impl WriteState {
     fn swap(&mut self) {
@@ -28,12 +28,10 @@ impl WriteState {
     }
 }
 
-
-
 use legion::systems::Resource;
 
 pub struct Events<E: Resource> {
-    events: Vec<E>
+    events: Vec<E>,
 }
 
 // #[system]
@@ -88,7 +86,6 @@ fn events_update(
 
     reads.extend(writes.data.get_mut().drain(..));
 
-
     // reads.extend(writes.clone().into_iter());
 }
 
@@ -138,21 +135,14 @@ impl Layer for SceneLayer {
 
 #[system(for_each)]
 #[filter(!component::<Rotation>())]
-fn update(
-    translation: &mut Translation,
-    #[resource] time: &Time,
-) {
+fn update(translation: &mut Translation, #[resource] time: &Time) {
     let (x, y) = (time.elapsed_f32().cos() * 2., time.elapsed_f32().sin() * 2.);
 
     translation.0 = m::vec3(x, y, 0.);
 }
 
 #[system(for_each)]
-fn update2(
-    translation: &mut Translation,
-    rotation: &mut Rotation,
-    #[resource] time: &Time,
-) {
+fn update2(translation: &mut Translation, rotation: &mut Rotation, #[resource] time: &Time) {
     let (x, y) = (time.elapsed_f32().cos() * 3., time.elapsed_f32().sin() * 3.);
 
     translation.0 = m::vec3(x, y, 0.);

@@ -16,7 +16,7 @@ use wgpu::{BindGroupLayoutEntry, ShaderStages};
 
 use crate::events::PenguinEventSender;
 use crate::render_scene::mesh_pass;
-use crate::render_scene::mesh_pass::{IndirectBatch, MeshPass, PassObject};
+use crate::render_scene::mesh_pass::{IndirectBatch, LegacyMeshPass, PassObject};
 use crate::render_scene::RenderObject;
 use crate::{events, DrawOutputInfo, RenderInstance};
 use macaw as m;
@@ -41,7 +41,7 @@ mod resources {
         pub render_objects: HandleMap<RenderObject>,
         pub should_rebuild_batches: bool,
         pub render_objects_to_reupload: Vec<Handle<RenderObject>>,
-        pub forward_pass: mesh_pass::MeshPass,
+        pub forward_pass: mesh_pass::LegacyMeshPass,
     }
 
     /// The max value for possible draw commands (max draw count read from the draw count buffer)
@@ -284,7 +284,7 @@ impl Default for RenderObjects {
             render_objects: HandleMap::new(),
             should_rebuild_batches: true,
             render_objects_to_reupload: Vec::new(),
-            forward_pass: mesh_pass::MeshPass::new(),
+            forward_pass: mesh_pass::LegacyMeshPass::new(),
         }
     }
 }

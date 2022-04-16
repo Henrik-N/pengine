@@ -96,7 +96,7 @@ pub struct RenderScene {
     pub compute_shader_local_data_buffer: GpuBuffer<DrawOutputInfo>,
 
     /// Mesh pass for forward rendering.
-    forward_pass: mesh_pass::MeshPass,
+    forward_pass: mesh_pass::LegacyMeshPass,
 }
 
 #[repr(C)]
@@ -167,7 +167,7 @@ impl RenderScene {
             render_objects: HandleMap::new(),
             render_objects_buffer,
             render_objects_to_update: Vec::new(),
-            forward_pass: mesh_pass::MeshPass::new(),
+            forward_pass: mesh_pass::LegacyMeshPass::new(),
             max_draw_count: 0,
             instance_buffer,
             instance_index_to_render_object_map,

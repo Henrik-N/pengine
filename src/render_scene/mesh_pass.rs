@@ -45,7 +45,7 @@ pub struct PassObject {
 
 /// Information needed to render a pass of meshes for a part of the renderer.
 /// Batches draws together into draw IndirectBatches that can be used to create draw commands.
-pub struct MeshPass {
+pub struct LegacyMeshPass {
     /// Draw indirect batches.
     pub indirect_batches: Vec<IndirectBatch>,
     /// Pass objects sorted by mesh and material combination.
@@ -57,7 +57,7 @@ pub struct MeshPass {
     pub unbatched_objects: Vec<Handle<render_scene::RenderObject>>,
 }
 
-impl MeshPass {
+impl LegacyMeshPass {
     pub fn new() -> Self {
         Self {
             indirect_batches: Vec::new(),

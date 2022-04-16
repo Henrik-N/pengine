@@ -7,6 +7,7 @@ mod graphics_context;
 mod input;
 mod layer;
 mod mesh;
+mod new_bevy_ecs;
 mod render_scene;
 mod texture;
 mod time;
@@ -697,7 +698,8 @@ impl RendererState {
 
 fn main() {
     // main_without_layers();
-    main_with_layers();
+    // main_with_layers();
+    new_bevy_ecs::new_main();
 }
 
 /// Entry point.

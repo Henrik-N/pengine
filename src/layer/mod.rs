@@ -1,8 +1,8 @@
 mod application_layer;
 mod base_render_scene_layer;
+mod editor_layer;
 mod pipelines_layer;
 mod scene_layer;
-mod editor_layer;
 
 pub use application_layer::ApplicationLayer;
 pub use base_render_scene_layer::BaseRenderSceneLayer;

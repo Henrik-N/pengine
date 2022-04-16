@@ -1,33 +1,55 @@
+use crate::render_scene::mesh_pass;
 use anyhow::*;
+use bevy_app::{App, Plugin};
+use bevy_ecs::prelude::*;
+use bevy_ecs::system::Commands;
 use macaw as m;
 use penguin_util::raw_gpu_types::DrawIndexedIndirect;
 use std::mem;
-use std::result::Result::Ok;
+use std::ops::Range;
 use wgpu::util::DeviceExt;
-
-pub trait Vertex {
-    fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a>;
-}
 
 #[repr(C, align(4))]
 #[derive(Copy, Clone, Debug)]
-pub struct MeshVertex {
+pub struct Vertex {
     pub position: m::Vec3,
     pub normal: m::Vec3,
     pub uv: m::Vec2,
 }
-unsafe impl bytemuck::Pod for MeshVertex {}
-unsafe impl bytemuck::Zeroable for MeshVertex {}
+unsafe impl bytemuck::Pod for Vertex {}
+unsafe impl bytemuck::Zeroable for Vertex {}
 
-impl MeshVertex {
+// Ranges in an uploaded vertex/index buffer that represent a mesh
+#[derive(Debug)]
+pub struct MeshDefinition {
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+}
+
+/// Uploaded meshes vertices and indices data
+#[derive(Debug)]
+pub struct VertexArrayBuffer {
+    pub buffer: wgpu::Buffer,
+    vertices_byte_range: u64,
+}
+
+/// Mesh data loaded into memory (CPU-side memory / RAM).
+#[derive(Debug)]
+pub struct MeshAsset {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}
+
+impl Vertex {
     const ATTRIBUTES: [wgpu::VertexAttribute; 3] = wgpu::vertex_attr_array![
         0 => Float32x3,
         1 => Float32x3,
         2 => Float32x2,
     ];
-}
-impl Vertex for MeshVertex {
-    fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
+
+    pub fn buffer_layout<'a>() -> wgpu::VertexBufferLayout<'a> {
         wgpu::VertexBufferLayout {
             array_stride: mem::size_of::<Self>() as _,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -36,26 +58,7 @@ impl Vertex for MeshVertex {
     }
 }
 
-// -----------------
-
-/// todo: Bounds of a mesh used for culling in a compute shader.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct RenderBounds {
-    pub origin: m::Vec3,
-    pub radius: f32,
-}
-
-/// Ranges in a vertex array buffer's vertices and indices section that represents a mesh.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Mesh {
-    pub first_vertex: u32,
-    pub vertex_count: u32,
-    pub first_index: u32,
-    pub index_count: u32,
-}
-impl Mesh {
+impl MeshDefinition {
     /// Creates a draw command using this mesh.
     pub fn create_draw_command(
         &self,
@@ -72,12 +75,6 @@ impl Mesh {
     }
 }
 
-// -----------------
-
-pub struct VertexArrayBuffer {
-    pub buffer: wgpu::Buffer,
-    vertices_byte_range: u64,
-}
 impl VertexArrayBuffer {
     /// Returns the slice of the vertex array buffer that contains the vertices.
     pub fn vertices_slice(&self) -> wgpu::BufferSlice {
@@ -97,7 +94,7 @@ impl VertexArrayBuffer {
     pub fn build_from_mesh_assets(
         device: &wgpu::Device,
         mesh_asset_names: &[&str],
-    ) -> (Self, Vec<Mesh>) {
+    ) -> (Self, Vec<MeshDefinition>) {
         let assets_dir = std::path::Path::new(env!("OUT_DIR")).join("assets/meshes");
 
         let mut next_first_vertex = 0;
@@ -105,21 +102,22 @@ impl VertexArrayBuffer {
 
         let mut meshes = Vec::with_capacity(mesh_asset_names.len());
 
-        println!("loading meshes...");
-        let (vertices, indices): (Vec<Vec<MeshVertex>>, Vec<Vec<u32>>) = mesh_asset_names
+        log::trace!("starts loading meshes...");
+
+        let (vertices, indices): (Vec<Vec<Vertex>>, Vec<Vec<u32>>) = mesh_asset_names
             .iter()
             .map(|mesh_name| {
                 let MeshAsset { vertices, indices } =
                     MeshAsset::load_obj(assets_dir.join(mesh_name))
                         .expect(&format!("failed to load {}", mesh_name));
 
-                let mesh = Mesh {
+                let mesh = MeshDefinition {
                     first_vertex: next_first_vertex,
                     vertex_count: vertices.len() as _,
                     first_index: next_first_index,
                     index_count: indices.len() as _,
                 };
-                println!("loaded mesh: {:?}", mesh);
+                log::trace!("loaded mesh {}: {:?}", mesh_name, mesh);
                 meshes.push(mesh);
 
                 next_first_vertex += vertices.len() as u32;
@@ -128,6 +126,7 @@ impl VertexArrayBuffer {
                 (vertices, indices)
             })
             .unzip();
+
         println!("\n");
 
         let vertices = vertices.into_iter().flatten().collect::<Vec<_>>();
@@ -136,6 +135,8 @@ impl VertexArrayBuffer {
         let vertices_bytes: &[u8] = bytemuck::cast_slice(&vertices);
         let indices_bytes: &[u8] = bytemuck::cast_slice(&indices);
         let vertices_byte_range = vertices_bytes.len();
+
+        log::trace!("mesh loading complete");
 
         let vertex_array_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex index buffer"),
@@ -153,11 +154,6 @@ impl VertexArrayBuffer {
     }
 }
 
-/// Mesh data loaded into memory (CPU-side memory / RAM).
-pub struct MeshAsset {
-    pub vertices: Vec<MeshVertex>,
-    pub indices: Vec<u32>,
-}
 impl MeshAsset {
     /// Loads an obj file's vertices and indices into memory.
     pub fn load_obj<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
@@ -171,14 +167,14 @@ impl MeshAsset {
             },
         )?;
 
-        let mut vertices: Vec<Vec<MeshVertex>> = Vec::new();
+        let mut vertices: Vec<Vec<Vertex>> = Vec::new();
         let mut indices: Vec<Vec<u32>> = Vec::new();
 
         let mut next_vertex_index_begin = 0;
 
         for shape in shapes.iter() {
             let shape_verts = (0..shape.mesh.positions.len() / 3)
-                .map(|vertex_index| MeshVertex {
+                .map(|vertex_index| Vertex {
                     position: m::Vec3::from_slice(
                         &shape.mesh.positions[vertex_index * 3..=vertex_index * 3 + 2],
                     ),
@@ -198,25 +194,47 @@ impl MeshAsset {
                 .map(|index| next_vertex_index_begin + index)
                 .collect::<Vec<_>>();
 
-            // println!(
-            //     "shape:\n\
-            //         \tvertex count: {},\n\
-            //         \tindex count: {},\n\
-            //         \tbase vertex: {}\n",
-            //     shape_verts.len(),
-            //     shape_inds.len(),
-            //     next_vertex_index_begin
-            // );
-
             next_vertex_index_begin += shape.mesh.positions.len() as u32;
 
             vertices.push(shape_verts);
             indices.push(shape_inds);
         }
 
-        let vertices = vertices.into_iter().flatten().collect::<Vec<MeshVertex>>();
+        let vertices = vertices.into_iter().flatten().collect::<Vec<Vertex>>();
         let indices = indices.into_iter().flatten().collect::<Vec<u32>>();
 
         Ok(Self { vertices, indices })
     }
+}
+
+// end of meshes -------------------------------
+
+// render scene ---------------
+pub struct MeshAssetsToLoad {
+    pub mesh_asset_names: &'static [&'static str],
+}
+
+pub struct RenderScene;
+
+impl Plugin for RenderScene {
+    fn build(&self, app: &mut App) {
+        app.insert_resource(MeshAssetsToLoad {
+            mesh_asset_names: &["cube.obj", "cone.obj"],
+        });
+    }
+}
+
+/// Batches mesh/material combos together into IndirectBatches that can be used to create draw commands
+struct DrawBatcher(mesh_pass::LegacyMeshPass);
+
+/// Meshpass: information needed to render a pass of meshes for a part of the renderer.
+/// A mesh pass holds it's own buffer of batched draw commands, but it shares a common vertex array
+/// buffer with other mesh passes.
+struct ForwardMeshPass {
+    batcher: DrawBatcher,
+    compute_bind_group: wgpu::BindGroup,
+    compute_pipeline: wgpu::ComputePipeline,
+    vertex_bind_group: wgpu::BindGroup,
+    fragment_bind_group: wgpu::BindGroup,
+    render_pipeline: wgpu::RenderPipeline,
 }

@@ -7,20 +7,6 @@ pub struct Time {
     clock: crate::time::Clock,
 }
 
-pub trait TestExt {
-    fn test_func_yeet();
-}
-impl TestExt for atomic_refcell::AtomicRef<'_, Time> {
-    fn test_func_yeet() {
-        println!("mooooooooooooooooooooooooooo- -------------------");
-    }
-}
-
-// impl atomic_refcell::AtomicRef<Time> {
-//
-// }
-
-
 pub struct ApplicationLayer;
 
 impl Layer for ApplicationLayer {
@@ -48,7 +34,6 @@ impl Layer for ApplicationLayer {
 fn update_delta_time(#[resource] dt: &mut Time) {
     dt.clock.tick();
 }
-
 
 penguin_util::impl_default!(
     Time,
